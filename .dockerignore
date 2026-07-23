@@ -1,0 +1,23 @@
+.git
+.github
+.idea
+.DS_Store
+**/.DS_Store
+
+# Never send local credentials or runtime data to the Docker daemon.
+.env
+env
+src/.env
+src/runtime
+src/*.db
+src/*.db-shm
+src/*.db-wal
+src/epusdt_main
+src/epusdt_main_linux
+srcsrc
+
+# Legacy/local-only assets are not needed in the application image.
+plugins
+sql
+*.log
+bin

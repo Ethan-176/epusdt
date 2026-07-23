@@ -1,0 +1,59 @@
+name: docker-alpine-epusdt
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+  IMAGE_NAME: epusdt
+
+jobs:
+  push-docker-hub:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Validate Docker Hub Namespace
+        run: |
+          if [[ -z "$DOCKERHUB_NAMESPACE" ]]; then
+            echo "Set the repository variable DOCKERHUB_NAMESPACE before publishing Docker images."
+            exit 1
+          fi
+
+      - name: Set Up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set Up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKERHUB_NAMESPACE }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=alpine
+            type=raw,value=latest
+            type=ref,event=tag
+            type=sha,prefix=sha-,suffix=-alpine
+
+      - name: Login To Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build And Push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            BUILD_VERSION=${{ github.ref_name }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

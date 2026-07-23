@@ -1,0 +1,15 @@
+.idea/
+src/runtime/
+src/.env
+src/*.db
+src/*.db-shm
+src/*.db-wal
+src/epusdt_main
+src/epusdt_main_linux
+srcsrc/
+env
+.DS_Store
+.env
+dist/
+bin/
+*.log

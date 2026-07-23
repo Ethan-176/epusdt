@@ -1,0 +1,1 @@
+import{t as e}from"./forbidden-CGDQL_RN.js";var t=e;export{t as component};

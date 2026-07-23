@@ -1,0 +1,32 @@
+name: epusdt
+
+services:
+  epusdt:
+    image: epusdt-custom:v1.0.10
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BUILD_VERSION: v1.0.10
+        BUILD_COMMIT: local
+        BUILD_DATE: ${BUILD_DATE:-unknown}
+    restart: unless-stopped
+    volumes:
+      - ./env:/app/.env:ro
+      - epusdt_runtime:/app/runtime
+    ports:
+      - "${EPUSDT_PORT:-8888}:8000"
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -q
+        - --spider
+        - http://127.0.0.1:8000/payments/gmpay/v1/config
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  epusdt_runtime:
