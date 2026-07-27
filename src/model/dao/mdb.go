@@ -28,6 +28,5 @@ func DBInit() error {
 	if err := migrateLegacySchema(); err != nil {
 		return err
 	}
-	MdbTableInit()
-	return nil
+	return MdbTableInit()
 }

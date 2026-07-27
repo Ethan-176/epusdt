@@ -36,21 +36,21 @@ const (
 )
 
 type Orders struct {
-	TradeId            string  `gorm:"column:trade_id;uniqueIndex:orders_trade_id_uindex" json:"trade_id" example:"3nQ9pL2xV7sK1mR8cT4yB_aZ"`
-	OrderId            string  `gorm:"column:order_id;uniqueIndex:orders_order_id_uindex" json:"order_id" example:"ORD20260416001"`
-	ParentTradeId      string  `gorm:"column:parent_trade_id;index:idx_orders_parent_trade_id;default:''" json:"parent_trade_id"`
-	BlockTransactionId string  `gorm:"index:orders_block_transaction_id_index;column:block_transaction_id" json:"block_transaction_id" example:"0xabc123..."`
+	TradeId            string  `gorm:"column:trade_id;size:32;uniqueIndex:orders_trade_id_uindex" json:"trade_id" example:"3nQ9pL2xV7sK1mR8cT4yB_aZ"`
+	OrderId            string  `gorm:"column:order_id;size:32;uniqueIndex:orders_order_id_uindex" json:"order_id" example:"ORD20260416001"`
+	ParentTradeId      string  `gorm:"column:parent_trade_id;size:32;index:idx_orders_parent_trade_id;default:''" json:"parent_trade_id"`
+	BlockTransactionId string  `gorm:"column:block_transaction_id;size:191;index:orders_block_transaction_id_index" json:"block_transaction_id" example:"0xabc123..."`
 	Amount             float64 `gorm:"column:amount" json:"amount" example:"100.0000"`
-	Currency           string  `gorm:"column:currency" json:"currency" example:"CNY"`
+	Currency           string  `gorm:"column:currency;size:16" json:"currency" example:"CNY"`
 	ActualAmount       float64 `gorm:"column:actual_amount" json:"actual_amount" example:"14.2857"`
-	ReceiveAddress     string  `gorm:"column:receive_address" json:"receive_address" example:"TTestTronAddress001"`
-	Token              string  `gorm:"column:token" json:"token" example:"USDT"`
-	Network            string  `gorm:"column:network" json:"network" example:"tron"`
+	ReceiveAddress     string  `gorm:"column:receive_address;size:191" json:"receive_address" example:"TTestTronAddress001"`
+	Token              string  `gorm:"column:token;size:32" json:"token" example:"USDT"`
+	Network            string  `gorm:"column:network;size:32" json:"network" example:"tron"`
 	// 订单状态 1=等待支付 2=支付成功 3=已过期 4=等待选择支付网络/币种
 	Status      int    `gorm:"column:status;default:1" json:"status" enums:"1,2,3,4" example:"1"`
-	NotifyUrl   string `gorm:"column:notify_url" json:"notify_url" example:"https://example.com/notify"`
-	RedirectUrl string `gorm:"column:redirect_url" json:"redirect_url" example:"https://example.com/success"`
-	Name        string `gorm:"column:name" json:"name" example:"VIP月卡"`
+	NotifyUrl   string `gorm:"column:notify_url;size:512" json:"notify_url" example:"https://example.com/notify"`
+	RedirectUrl string `gorm:"column:redirect_url;size:512" json:"redirect_url" example:"https://example.com/success"`
+	Name        string `gorm:"column:name;size:255" json:"name" example:"VIP月卡"`
 	EpayType    string `gorm:"column:epay_type;size:64;default:''" json:"-"`
 	CallbackNum int    `gorm:"column:callback_num;default:0" json:"callback_num" example:"0"`
 	// 回调确认状态 1=回调成功 2=未回调/回调失败
@@ -58,7 +58,7 @@ type Orders struct {
 	IsSelected      bool `gorm:"column:is_selected;default:false" json:"is_selected" example:"false"`
 	// PaymentType is not a channel selector. "Epay" changes callback format
 	// to legacy EPay case-insensitively; "Gmpay" uses GMPay JSON.
-	PaymentType string `gorm:"column:payment_type" json:"payment_type" example:"Epay"`
+	PaymentType string `gorm:"column:payment_type;size:16" json:"payment_type" example:"Epay"`
 	// PayProvider identifies how this specific order row is collected.
 	//
 	// Semantics:

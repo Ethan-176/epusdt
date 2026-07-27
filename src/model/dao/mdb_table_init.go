@@ -2,6 +2,7 @@ package dao
 
 import (
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -12,12 +13,16 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-var once sync.Once
+var (
+	once            sync.Once
+	mdbTableInitErr error
+)
 
 // ResetMdbTableInitForTest resets the install/startup migration guard so tests
 // can exercise fresh temporary databases in the same process.
 func ResetMdbTableInitForTest() {
 	once = sync.Once{}
+	mdbTableInitErr = nil
 }
 
 // MdbTableInit performs AutoMigrate for all primary DB tables and seeds
@@ -27,7 +32,7 @@ func ResetMdbTableInitForTest() {
 // established.  The install wizard (see install/installer.go) writes the
 // .env file before bootstrap runs, so this function always finds the DB
 // available.
-func MdbTableInit() {
+func MdbTableInit() error {
 	once.Do(func() {
 		migrations := []struct {
 			name  string
@@ -47,6 +52,7 @@ func MdbTableInit() {
 		for _, m := range migrations {
 			if err := Mdb.AutoMigrate(m.model); err != nil {
 				color.Red.Printf("[store_db] AutoMigrate DB(%s),err=%s\n", m.name, err)
+				mdbTableInitErr = fmt.Errorf("auto migrate %s: %w", m.name, err)
 				return
 			}
 		}
@@ -58,6 +64,7 @@ func MdbTableInit() {
 		seedDefaultSettings()
 		seedTelegramChannelFromSettings()
 	})
+	return mdbTableInitErr
 }
 
 // seedChains inserts the built-in networks as enabled rows. Uses
@@ -227,7 +234,7 @@ func SyncTelegramChannelFromSettings() {
 		"system.telegram_abnormal_notice_enabled",
 	}
 	var rows []mdb.Setting
-	if err := Mdb.Where("key IN ?", keys).Find(&rows).Error; err != nil {
+	if err := Mdb.Where("`key` IN ?", keys).Find(&rows).Error; err != nil {
 		color.Red.Printf("[store_db] sync telegram channel: read settings err=%s\n", err)
 		return
 	}
