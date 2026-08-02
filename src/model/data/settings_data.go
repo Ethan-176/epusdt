@@ -183,10 +183,6 @@ func DeleteSetting(key string) error {
 // sensitiveSettingKeys lists keys that must never be returned to API callers.
 var sensitiveSettingKeys = []string{
 	mdb.SettingKeyJwtSecret,
-	mdb.SettingKeyInitAdminPasswordPlain,
-	mdb.SettingKeyInitAdminPasswordHash,
-	mdb.SettingKeyInitAdminPasswordFetched,
-	mdb.SettingKeyInitAdminPasswordChanged,
 }
 
 func getFirstNonEmptySetting(fallback string, keys ...string) string {

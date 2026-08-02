@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
+	"github.com/GMWalletApp/epusdt/config"
 	"github.com/GMWalletApp/epusdt/controller/admin"
 	"github.com/GMWalletApp/epusdt/controller/comm"
 	"github.com/GMWalletApp/epusdt/middleware"
@@ -235,11 +237,20 @@ func RegisterRoute(e *echo.Echo) {
 // registerAdminRoutes wires the management console API surface under
 // /admin/api/v1. Everything except /auth/login requires a valid JWT.
 func registerAdminRoutes(e *echo.Echo) {
-	// CORS for the management console. The admin SPA is commonly served
-	// from a different origin (local dev, CDN, etc.), so allow any origin
-	// but require explicit echoing — browsers refuse wildcard + credentials.
+	allowedOrigins := make(map[string]struct{})
+	for _, origin := range config.GetAdminWebAuthnOrigins() {
+		if parsed, err := url.Parse(origin); err == nil && parsed.Scheme != "" && parsed.Host != "" {
+			allowedOrigins[parsed.Scheme+"://"+parsed.Host] = struct{}{}
+		}
+	}
+	// Admin APIs only accept explicitly configured origins. The bearer token
+	// is supplied by JavaScript, so credentialed cross-origin requests are not
+	// needed and remain disabled.
 	adminCORS := echoMiddleware.CORSWithConfig(echoMiddleware.CORSConfig{
-		AllowOriginFunc: func(origin string) (bool, error) { return true, nil },
+		AllowOriginFunc: func(origin string) (bool, error) {
+			_, ok := allowedOrigins[strings.TrimRight(strings.TrimSpace(origin), "/")]
+			return ok, nil
+		},
 		AllowMethods: []string{
 			http.MethodGet,
 			http.MethodPost,
@@ -255,21 +266,36 @@ func registerAdminRoutes(e *echo.Echo) {
 			echo.HeaderAccept,
 			echo.HeaderXRequestedWith,
 		},
-		AllowCredentials: true,
+		AllowCredentials: false,
 		MaxAge:           86400,
 	})
 
 	adminV1 := e.Group("/admin/api/v1", adminCORS)
+	adminV1.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(ctx echo.Context) error {
+			headers := ctx.Response().Header()
+			headers.Set("Cache-Control", "no-store")
+			headers.Set("X-Content-Type-Options", "nosniff")
+			headers.Set("X-Frame-Options", "DENY")
+			headers.Set("Referrer-Policy", "no-referrer")
+			headers.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), publickey-credentials-get=(self), publickey-credentials-create=(self)")
+			return next(ctx)
+		}
+	})
 
 	// Public (no JWT)
 	adminV1.POST("/auth/login", admin.Ctrl.Login)
-	adminV1.GET("/auth/init-password-hash", admin.Ctrl.GetInitialPasswordHash)
+	adminV1.POST("/auth/passkeys/login/start", admin.Ctrl.PasskeyLoginStart)
+	adminV1.POST("/auth/passkeys/login/finish", admin.Ctrl.PasskeyLoginFinish)
+	adminV1.POST("/auth/passkeys/register/start", admin.Ctrl.PasskeyRegisterStart)
+	adminV1.POST("/auth/passkeys/register/finish", admin.Ctrl.PasskeyRegisterFinish)
 
 	// Authenticated
 	authed := adminV1.Group("", middleware.CheckAdminJWT())
 	authed.POST("/auth/logout", admin.Ctrl.Logout)
 	authed.GET("/auth/me", admin.Ctrl.Me)
-	authed.POST("/auth/password", admin.Ctrl.ChangePassword)
+	authed.GET("/auth/passkeys", admin.Ctrl.ListPasskeys)
+	authed.DELETE("/auth/passkeys/:id", admin.Ctrl.DeletePasskey)
 
 	// API key management
 	authed.GET("/api-keys", admin.Ctrl.ListApiKeys)

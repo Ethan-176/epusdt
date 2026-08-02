@@ -50,6 +50,10 @@ var Errno = map[int]string{
 	10044: "invalid order redirect url",
 	10045: "order api key unavailable",
 	10046: "failed to build epay return signature",
+	10047: "too many login failures, try again later",
+	10048: "invalid two-factor authentication code",
+	10049: "authentication challenge is invalid or expired",
+	10050: "passkey is unavailable",
 }
 
 var (
@@ -100,6 +104,10 @@ var (
 	OrderRedirectURLErr        = Err(10044)
 	OrderApiKeyUnavailableErr  = Err(10045)
 	EPayReturnSignatureErr     = Err(10046)
+	AdminLoginLockedErr        = Err(10047)
+	AdminTOTPInvalidErr        = Err(10048)
+	AdminAuthChallengeErr      = Err(10049)
+	AdminPasskeyUnavailableErr = Err(10050)
 )
 
 type RspError struct {

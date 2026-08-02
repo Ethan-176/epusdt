@@ -12,7 +12,7 @@ import (
 
 	"github.com/GMWalletApp/epusdt/config"
 	"github.com/GMWalletApp/epusdt/model/dao"
-	"github.com/GMWalletApp/epusdt/model/data"
+	"github.com/GMWalletApp/epusdt/model/mdb"
 	"github.com/labstack/echo/v4"
 	"github.com/spf13/viper"
 )
@@ -67,29 +67,6 @@ func assertDoneClosed(t *testing.T, done <-chan struct{}) {
 	case <-done:
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("handler did not close done channel within timeout")
-	}
-}
-
-func changeInstalledAdminPassword(t *testing.T, envPath, newPassword string) {
-	t.Helper()
-
-	if err := initInstallConfig(envPath); err != nil {
-		t.Fatalf("reopen install config: %v", err)
-	}
-	if err := initInstallDatabases(); err != nil {
-		t.Fatalf("reopen install databases: %v", err)
-	}
-	defer closeInstallDatabases()
-
-	user, err := data.GetAdminUserByUsername("admin")
-	if err != nil {
-		t.Fatalf("load admin user: %v", err)
-	}
-	if user.ID == 0 {
-		t.Fatal("expected seeded admin user")
-	}
-	if err := data.UpdateAdminUserPassword(uint64(user.ID), newPassword); err != nil {
-		t.Fatalf("change admin password: %v", err)
 	}
 }
 
@@ -224,7 +201,7 @@ func TestInstallServerServesSPAOnInstallRoute(t *testing.T) {
 	}
 }
 
-func TestInstallAPISubmitReturnsInitialPassword(t *testing.T) {
+func TestInstallAPISubmitCreatesAdminIdentityWithoutPassword(t *testing.T) {
 	resetInstallTestState(t)
 
 	dir := t.TempDir()
@@ -242,9 +219,8 @@ func TestInstallAPISubmitReturnsInitialPassword(t *testing.T) {
 	if got, _ := body["message"].(string); got == "" {
 		t.Fatalf("expected success message, got body=%v", body)
 	}
-	initPassword, _ := body["init_password"].(string)
-	if strings.TrimSpace(initPassword) == "" {
-		t.Fatalf("expected non-empty init_password, got body=%v", body)
+	if _, exists := body["init_password"]; exists {
+		t.Fatalf("install response must not contain init_password, got body=%v", body)
 	}
 	assertDoneClosed(t, h.done)
 
@@ -264,7 +240,7 @@ func TestInstallAPISubmitReturnsInitialPassword(t *testing.T) {
 	}
 }
 
-func TestInstallAPISubmitRepeatInstallReturnsSamePasswordWhilePlaintextExists(t *testing.T) {
+func TestInstallAPISubmitRepeatInstallRemainsPasswordFree(t *testing.T) {
 	resetInstallTestState(t)
 
 	dir := t.TempDir()
@@ -277,9 +253,8 @@ func TestInstallAPISubmitRepeatInstallReturnsSamePasswordWhilePlaintextExists(t 
 		t.Fatalf("first install status = %d, want 200; body: %s", rec1.Code, rec1.Body.String())
 	}
 	body1 := decodeBody(t, rec1)
-	password1, _ := body1["init_password"].(string)
-	if strings.TrimSpace(password1) == "" {
-		t.Fatalf("expected first init_password, got body=%v", body1)
+	if _, exists := body1["init_password"]; exists {
+		t.Fatalf("first install response contains init_password: %v", body1)
 	}
 	assertDoneClosed(t, h1.done)
 
@@ -289,14 +264,13 @@ func TestInstallAPISubmitRepeatInstallReturnsSamePasswordWhilePlaintextExists(t 
 		t.Fatalf("second install status = %d, want 200; body: %s", rec2.Code, rec2.Body.String())
 	}
 	body2 := decodeBody(t, rec2)
-	password2, _ := body2["init_password"].(string)
-	if password2 != password1 {
-		t.Fatalf("expected repeat install to return same init_password %q, got %q", password1, password2)
+	if _, exists := body2["init_password"]; exists {
+		t.Fatalf("repeat install response contains init_password: %v", body2)
 	}
 	assertDoneClosed(t, h2.done)
 }
 
-func TestInstallAPISubmitRepeatInstallOmitsPasswordAfterPasswordChange(t *testing.T) {
+func TestInstallAPISubmitSeedsOneAdminIdentity(t *testing.T) {
 	resetInstallTestState(t)
 
 	dir := t.TempDir()
@@ -310,8 +284,6 @@ func TestInstallAPISubmitRepeatInstallOmitsPasswordAfterPasswordChange(t *testin
 	}
 	assertDoneClosed(t, h1.done)
 
-	changeInstalledAdminPassword(t, envPath, "new-password-456")
-
 	e2, h2 := newInstallTestAPI(envPath)
 	rec2 := submitInstallRequest(t, e2, payload)
 	if rec2.Code != http.StatusOK {
@@ -319,12 +291,27 @@ func TestInstallAPISubmitRepeatInstallOmitsPasswordAfterPasswordChange(t *testin
 	}
 	body2 := decodeBody(t, rec2)
 	if got, ok := body2["init_password"]; ok {
-		t.Fatalf("expected init_password to be omitted after password change, got %v", got)
+		t.Fatalf("expected init_password to be omitted, got %v", got)
 	}
 	if got, _ := body2["message"].(string); got == "" {
 		t.Fatalf("expected success message, got body=%v", body2)
 	}
 	assertDoneClosed(t, h2.done)
+
+	if err := initInstallConfig(envPath); err != nil {
+		t.Fatalf("reopen install config: %v", err)
+	}
+	if err := initInstallDatabases(); err != nil {
+		t.Fatalf("reopen install databases: %v", err)
+	}
+	defer closeInstallDatabases()
+	var count int64
+	if err := dao.Mdb.Model(&mdb.AdminUser{}).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("admin user count=%d, want 1", count)
+	}
 }
 
 func TestInstallAPISubmitInitFailureKeepsInstallMode(t *testing.T) {

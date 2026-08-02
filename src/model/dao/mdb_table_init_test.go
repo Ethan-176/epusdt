@@ -11,11 +11,11 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestDefaultRpcNodesIncludesManualVerifyEpusdtEvmNodes(t *testing.T) {
+func TestDefaultRpcNodesIncludesIndependentManualVerifyEvmNodes(t *testing.T) {
 	want := map[string]string{
-		mdb.NetworkEthereum: "https://rpc.epusdt.com/ethereum",
-		mdb.NetworkBsc:      "https://rpc.epusdt.com/binance",
-		mdb.NetworkPolygon:  "https://rpc.epusdt.com/polygon",
+		mdb.NetworkEthereum: "https://ethereum-rpc.publicnode.com",
+		mdb.NetworkBsc:      "https://bsc-rpc.publicnode.com",
+		mdb.NetworkPolygon:  "https://polygon-bor-rpc.publicnode.com",
 	}
 	got := make(map[string]mdb.RpcNode)
 	for _, node := range defaultRpcNodes() {
@@ -44,6 +44,63 @@ func TestDefaultRpcNodesIncludesManualVerifyEpusdtEvmNodes(t *testing.T) {
 		if node.Status != mdb.RpcNodeStatusUnknown {
 			t.Fatalf("%s manual_verify seed status = %q, want %q", network, node.Status, mdb.RpcNodeStatusUnknown)
 		}
+	}
+}
+
+func TestBackfillAdminPasskeyCredentialHashes(t *testing.T) {
+	db := setupSeedTableTestDB(t, &mdb.AdminPasskey{})
+	Mdb = db
+	row := mdb.AdminPasskey{
+		AdminUserID: 1, Name: "legacy", CredentialID: "legacy-credential-id",
+		CredentialJSON: `{}`,
+	}
+	if err := Mdb.Create(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := backfillAdminPasskeyCredentialHashes(); err != nil {
+		t.Fatal(err)
+	}
+	var got mdb.AdminPasskey
+	if err := Mdb.First(&got, row.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(got.CredentialIDHash) != 64 {
+		t.Fatalf("credential hash length=%d, want 64", len(got.CredentialIDHash))
+	}
+}
+
+func TestPurgeLegacyAdminCredentialSettings(t *testing.T) {
+	db := setupSeedTableTestDB(t, &mdb.Setting{})
+	Mdb = db
+	legacyKeys := []string{
+		"system.init_admin_password_plain",
+		"system.init_admin_password_hash",
+		"system.init_admin_password_fetched",
+		"system.init_admin_password_changed",
+		"system.admin_auth_encryption_key",
+	}
+	for _, key := range legacyKeys {
+		if err := Mdb.Create(&mdb.Setting{Group: mdb.SettingGroupSystem, Key: key, Value: "secret", Type: mdb.SettingTypeString}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := Mdb.Create(&mdb.Setting{Group: mdb.SettingGroupSystem, Key: mdb.SettingKeyJwtSecret, Value: "keep", Type: mdb.SettingTypeString}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := purgeLegacyAdminCredentialSettings(); err != nil {
+		t.Fatal(err)
+	}
+	var legacyCount int64
+	if err := Mdb.Unscoped().Model(&mdb.Setting{}).Where("`key` IN ?", legacyKeys).Count(&legacyCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if legacyCount != 0 {
+		t.Fatalf("legacy credential setting rows=%d, want 0", legacyCount)
+	}
+	var jwtCount int64
+	if err := Mdb.Model(&mdb.Setting{}).Where("`key` = ?", mdb.SettingKeyJwtSecret).Count(&jwtCount).Error; err != nil || jwtCount != 1 {
+		t.Fatalf("JWT setting count=%d err=%v, want 1", jwtCount, err)
 	}
 }
 

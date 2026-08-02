@@ -20,12 +20,14 @@ import (
 	"github.com/GMWalletApp/epusdt/model/service"
 	"github.com/GMWalletApp/epusdt/util/constant"
 	appLog "github.com/GMWalletApp/epusdt/util/log"
+	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/labstack/echo/v4"
+	"github.com/pquerna/otp/totp"
 )
 
 const (
-	testAdminUsername = "admin"
-	testAdminPassword = "test-admin-pass-123"
+	testAdminUsername   = "admin"
+	testAdminTOTPSecret = "JBSWY3DPEHPK3PXP"
 )
 
 // setupAdminTestEnv sets up the test environment with a seeded admin user
@@ -34,28 +36,28 @@ func setupAdminTestEnv(t *testing.T) (*echo.Echo, string) {
 	t.Helper()
 	e := setupTestEnv(t)
 
-	// Seed admin user with a known password.
-	hash, err := data.HashPassword(testAdminPassword)
-	if err != nil {
-		t.Fatalf("HashPassword: %v", err)
-	}
+	// Seed admin user with a directly provisioned Base32 TOTP secret.
 	dao.Mdb.Create(&mdb.AdminUser{
-		Username:     testAdminUsername,
-		PasswordHash: hash,
-		Status:       mdb.AdminUserStatusEnable,
+		Username:   testAdminUsername,
+		TOTPSecret: testAdminTOTPSecret,
+		Status:     mdb.AdminUserStatusEnable,
 	})
 
 	// Login to obtain a JWT for subsequent authenticated requests.
-	token := adminLogin(t, e, testAdminUsername, testAdminPassword)
+	token := adminLogin(t, e, testAdminUsername, testAdminTOTPSecret)
 	return e, token
 }
 
 // adminLogin performs a login request and returns the JWT token.
-func adminLogin(t *testing.T, e *echo.Echo, username, password string) string {
+func adminLogin(t *testing.T, e *echo.Echo, username, secret string) string {
 	t.Helper()
+	code, err := totp.GenerateCode(secret, time.Now())
+	if err != nil {
+		t.Fatalf("generate TOTP: %v", err)
+	}
 	body := map[string]interface{}{
-		"username": username,
-		"password": password,
+		"username":  username,
+		"totp_code": code,
 	}
 	rec := doPost(e, "/admin/api/v1/auth/login", body)
 	if rec.Code != http.StatusOK {
@@ -160,66 +162,56 @@ func assertUnauthorized(t *testing.T, rec *httptest.ResponseRecorder) {
 	}
 }
 
-// TestAdminLogin_Success verifies correct credentials return 200 + JWT.
-func TestAdminLogin_Success(t *testing.T) {
-	e := setupTestEnv(t)
-	hash, _ := data.HashPassword(testAdminPassword)
-	dao.Mdb.Create(&mdb.AdminUser{
-		Username:     testAdminUsername,
-		PasswordHash: hash,
-		Status:       mdb.AdminUserStatusEnable,
-	})
-
-	rec := doPost(e, "/admin/api/v1/auth/login", map[string]interface{}{
-		"username": testAdminUsername,
-		"password": testAdminPassword,
-	})
-	t.Logf("Login response: %s", rec.Body.String())
-
-	resp := assertOK(t, rec)
-	dataObj, _ := resp["data"].(map[string]interface{})
-	if dataObj["token"] == "" || dataObj["token"] == nil {
-		t.Fatal("expected non-empty token in login response")
+func seedTOTPAdmin(t *testing.T, secret string) {
+	t.Helper()
+	if err := dao.Mdb.Create(&mdb.AdminUser{
+		Username: testAdminUsername, TOTPSecret: secret,
+		Status: mdb.AdminUserStatusEnable,
+	}).Error; err != nil {
+		t.Fatal(err)
 	}
 }
 
-// TestAdminLogin_WrongPassword verifies wrong credentials return 4xx.
-func TestAdminLogin_WrongPassword(t *testing.T) {
+func TestAdminLoginWithDirectDatabaseTOTPSecret(t *testing.T) {
 	e := setupTestEnv(t)
-	hash, _ := data.HashPassword(testAdminPassword)
-	dao.Mdb.Create(&mdb.AdminUser{
-		Username:     testAdminUsername,
-		PasswordHash: hash,
-		Status:       mdb.AdminUserStatusEnable,
-	})
-
+	if err := dao.Mdb.Create(&mdb.AdminUser{
+		Username: testAdminUsername, TOTPSecret: testAdminTOTPSecret,
+		Status: mdb.AdminUserStatusEnable,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	code, _ := totp.GenerateCode(testAdminTOTPSecret, time.Now())
 	rec := doPost(e, "/admin/api/v1/auth/login", map[string]interface{}{
-		"username": testAdminUsername,
-		"password": "wrong-password",
+		"username": testAdminUsername, "totp_code": code,
 	})
-	t.Logf("Login wrong-password response: status=%d body=%s", rec.Code, rec.Body.String())
-	if rec.Code == http.StatusOK {
-		var resp map[string]interface{}
-		json.Unmarshal(rec.Body.Bytes(), &resp)
-		if code, _ := resp["code"].(float64); code == 200 {
-			t.Fatal("expected failure for wrong password, got 200")
+	resp := assertOK(t, rec)
+	dataObj := resp["data"].(map[string]interface{})
+	if dataObj["token"] == "" || dataObj["auth_method"] != "totp" {
+		t.Fatalf("unexpected TOTP login response: %s", rec.Body.String())
+	}
+
+}
+
+func TestAdminPasswordAndTOTPSetupRoutesAreRemoved(t *testing.T) {
+	e, token := setupAdminTestEnv(t)
+	for _, path := range []string{"/admin/api/v1/auth/password", "/admin/api/v1/auth/totp/setup", "/admin/api/v1/auth/totp/enable", "/admin/api/v1/auth/totp/disable"} {
+		rec := doPostAdmin(e, path, map[string]interface{}{}, token)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("removed credential route %s returned %d: %s", path, rec.Code, rec.Body.String())
 		}
 	}
 }
 
-// TestAdminLogin_MissingFields verifies missing required fields return 4xx.
-func TestAdminLogin_MissingFields(t *testing.T) {
+func TestAdminLoginRejectsMissingSecretAndWrongCode(t *testing.T) {
 	e := setupTestEnv(t)
-	rec := doPost(e, "/admin/api/v1/auth/login", map[string]interface{}{
-		"username": testAdminUsername,
-		// password missing
-	})
-	t.Logf("Login missing-fields response: status=%d body=%s", rec.Code, rec.Body.String())
-	if rec.Code == http.StatusOK {
-		var resp map[string]interface{}
-		json.Unmarshal(rec.Body.Bytes(), &resp)
-		if code, _ := resp["code"].(float64); code == 200 {
-			t.Fatal("expected validation failure, got code=200")
+	seedTOTPAdmin(t, "")
+	for _, body := range []map[string]interface{}{
+		{"username": testAdminUsername, "totp_code": "123456"},
+		{"username": testAdminUsername},
+	} {
+		rec := doPost(e, "/admin/api/v1/auth/login", body)
+		if rec.Code == http.StatusOK {
+			t.Fatalf("login without provisioned secret/code must fail: %s", rec.Body.String())
 		}
 	}
 }
@@ -266,112 +258,81 @@ func TestAdminLogout(t *testing.T) {
 	rec := doPostAdmin(e, "/admin/api/v1/auth/logout", nil, token)
 	t.Logf("Logout response: %s", rec.Body.String())
 	assertOK(t, rec)
+	assertUnauthorized(t, doGetAdmin(e, "/admin/api/v1/auth/me", token))
 }
 
-// TestAdminChangePassword verifies the change-password route works correctly.
-func TestAdminChangePassword(t *testing.T) {
-	e, token := setupAdminTestEnv(t)
-	rec := doPostAdmin(e, "/admin/api/v1/auth/password", map[string]interface{}{
-		"old_password": testAdminPassword,
-		"new_password": "new-pass-456",
-	}, token)
-	t.Logf("ChangePassword response: %s", rec.Body.String())
-	assertOK(t, rec)
-
-	// Verify old password no longer works.
-	rec2 := doPost(e, "/admin/api/v1/auth/login", map[string]interface{}{
-		"username": testAdminUsername,
-		"password": testAdminPassword,
-	})
-	var resp2 map[string]interface{}
-	json.Unmarshal(rec2.Body.Bytes(), &resp2)
-	code2, _ := resp2["code"].(float64)
-	if code2 == 200 {
-		t.Fatal("old password should no longer work after change")
-	}
-}
-
-// TestAdminInitialPasswordMetadataFlow verifies that the public plaintext route
-// is gone while the hash-based default-password detection flow still works.
-func TestAdminInitialPasswordMetadataFlow(t *testing.T) {
+func TestAdminLoginLocksAccountAndIPAfterFiveFailures(t *testing.T) {
 	e := setupTestEnv(t)
-	const initPassword = "init-pass-123456"
-
-	adminHash, err := data.HashPassword(initPassword)
-	if err != nil {
-		t.Fatalf("HashPassword: %v", err)
+	seedTOTPAdmin(t, testAdminTOTPSecret)
+	for i := 1; i <= 5; i++ {
+		rec := doPost(e, "/admin/api/v1/auth/login", map[string]interface{}{"username": testAdminUsername, "totp_code": "000000"})
+		if i < 5 && rec.Code != http.StatusBadRequest {
+			t.Fatalf("failure %d status=%d body=%s", i, rec.Code, rec.Body.String())
+		}
+		if i == 5 && rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("fifth failure must lock login: status=%d body=%s", rec.Code, rec.Body.String())
+		}
 	}
-	dao.Mdb.Create(&mdb.AdminUser{
-		Username:     testAdminUsername,
-		PasswordHash: adminHash,
-		Status:       mdb.AdminUserStatusEnable,
+	code, _ := totp.GenerateCode(testAdminTOTPSecret, time.Now())
+	rec := doPost(e, "/admin/api/v1/auth/login", map[string]interface{}{"username": testAdminUsername, "totp_code": code})
+	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("correct TOTP must not bypass lock: status=%d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
+	}
+}
+
+func TestAdminPasskeyRegistrationAndLoginChallenges(t *testing.T) {
+	e, token := setupAdminTestEnv(t)
+	code, _ := totp.GenerateCode(testAdminTOTPSecret, time.Now())
+	startRegister := doPost(e, "/admin/api/v1/auth/passkeys/register/start", map[string]interface{}{
+		"username": testAdminUsername, "totp_code": code, "name": "test key",
 	})
-	_ = data.SetSetting(mdb.SettingGroupSystem, mdb.SettingKeyInitAdminPasswordPlain, initPassword, mdb.SettingTypeString)
-	_ = data.SetSetting(mdb.SettingGroupSystem, mdb.SettingKeyInitAdminPasswordHash, data.HashInitialAdminPassword(initPassword), mdb.SettingTypeString)
-	_ = data.SetSetting(mdb.SettingGroupSystem, mdb.SettingKeyInitAdminPasswordFetched, "false", mdb.SettingTypeBool)
-	_ = data.SetSetting(mdb.SettingGroupSystem, mdb.SettingKeyInitAdminPasswordChanged, "false", mdb.SettingTypeBool)
-
-	recHash := doGet(e, "/admin/api/v1/auth/init-password-hash")
-	respHash := assertOK(t, recHash)
-	hashData, _ := respHash["data"].(map[string]interface{})
-	if got := hashData["password_hash"]; got != data.HashInitialAdminPassword(initPassword) {
-		t.Fatalf("expected init hash %s, got %v", data.HashInitialAdminPassword(initPassword), got)
-	}
-	if got, _ := hashData["password_changed"].(bool); got {
-		t.Fatalf("expected password_changed=false before change, got true")
+	registerData := assertOK(t, startRegister)["data"].(map[string]interface{})
+	if registerData["challenge_id"] == "" || registerData["publicKey"] == nil {
+		t.Fatalf("missing registration challenge: %s", startRegister.Body.String())
 	}
 
-	token := adminLogin(t, e, testAdminUsername, initPassword)
+	user, _ := data.GetAdminUserByUsername(testAdminUsername)
+	if err := data.SaveAdminPasskey(user.ID, "test key", &webauthn.Credential{ID: []byte("credential-id"), PublicKey: []byte("public-key")}); err != nil {
+		t.Fatal(err)
+	}
+	startLogin := doPost(e, "/admin/api/v1/auth/passkeys/login/start", map[string]interface{}{"username": testAdminUsername})
+	loginData := assertOK(t, startLogin)["data"].(map[string]interface{})
+	if loginData["challenge_id"] == "" || loginData["publicKey"] == nil {
+		t.Fatalf("missing login challenge: %s", startLogin.Body.String())
+	}
+	list := doGetAdmin(e, "/admin/api/v1/auth/passkeys", token)
+	rows := assertOK(t, list)["data"].([]interface{})
+	if len(rows) != 1 || rows[0].(map[string]interface{})["name"] != "test key" {
+		t.Fatalf("unexpected passkey list: %s", list.Body.String())
+	}
+}
 
-	recFetch := doGetAdmin(e, "/admin/api/v1/auth/init-password", token)
-	if recFetch.Code != http.StatusNotFound {
-		t.Fatalf("expected removed init-password route to return 404, got %d body=%s", recFetch.Code, recFetch.Body.String())
+func TestAdminPasskeyRegistrationRequiresProvisionedTOTPSecret(t *testing.T) {
+	e := setupTestEnv(t)
+	seedTOTPAdmin(t, "")
+	rec := doPost(e, "/admin/api/v1/auth/passkeys/register/start", map[string]interface{}{
+		"username": testAdminUsername, "totp_code": "123456", "name": "blocked key",
+	})
+	if rec.Code == http.StatusOK {
+		t.Fatalf("passkey registration without TOTP secret must fail: %s", rec.Body.String())
 	}
-	var plaintextRows int64
-	if err := dao.Mdb.Unscoped().
-		Model(&mdb.Setting{}).
-		Where("`key` = ?", mdb.SettingKeyInitAdminPasswordPlain).
-		Count(&plaintextRows).Error; err != nil {
-		t.Fatalf("count init password plaintext rows: %v", err)
-	}
-	if plaintextRows != 1 {
-		t.Fatalf("expected init password plaintext to remain available, got %d rows", plaintextRows)
-	}
+}
 
-	recMe1 := doGetAdmin(e, "/admin/api/v1/auth/me", token)
-	respMe1 := assertOK(t, recMe1)
-	meData1, _ := respMe1["data"].(map[string]interface{})
-	if got, _ := meData1["password_is_default"].(bool); !got {
-		t.Fatalf("expected password_is_default=true before change, got %v", got)
+func TestAdminCORSRejectsUnconfiguredOrigin(t *testing.T) {
+	e := setupTestEnv(t)
+	request := func(origin string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodOptions, "/admin/api/v1/auth/login", nil)
+		req.Header.Set(echo.HeaderOrigin, origin)
+		req.Header.Set(echo.HeaderAccessControlRequestMethod, http.MethodPost)
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+		return rec
 	}
-
-	recChange := doPostAdmin(e, "/admin/api/v1/auth/password", map[string]interface{}{
-		"old_password": initPassword,
-		"new_password": "new-pass-789",
-	}, token)
-	assertOK(t, recChange)
-
-	recHash2 := doGet(e, "/admin/api/v1/auth/init-password-hash")
-	respHash2 := assertOK(t, recHash2)
-	hashData2, _ := respHash2["data"].(map[string]interface{})
-	if got, _ := hashData2["password_changed"].(bool); !got {
-		t.Fatalf("expected password_changed=true after change, got %v", got)
+	if got := request("https://evil.example").Header().Get(echo.HeaderAccessControlAllowOrigin); got != "" {
+		t.Fatalf("unexpected attacker origin allowance: %q", got)
 	}
-	if err := dao.Mdb.Unscoped().
-		Model(&mdb.Setting{}).
-		Where("`key` = ?", mdb.SettingKeyInitAdminPasswordPlain).
-		Count(&plaintextRows).Error; err != nil {
-		t.Fatalf("count init password plaintext rows after change: %v", err)
-	}
-	if plaintextRows != 0 {
-		t.Fatalf("expected init password plaintext to be hard-deleted after change, got %d rows", plaintextRows)
-	}
-
-	recMe2 := doGetAdmin(e, "/admin/api/v1/auth/me", token)
-	respMe2 := assertOK(t, recMe2)
-	meData2, _ := respMe2["data"].(map[string]interface{})
-	if got, _ := meData2["password_is_default"].(bool); got {
-		t.Fatalf("expected password_is_default=false after change, got %v", got)
+	if got := request("http://localhost:8080").Header().Get(echo.HeaderAccessControlAllowOrigin); got != "http://localhost:8080" {
+		t.Fatalf("configured origin not allowed: %q", got)
 	}
 }
 

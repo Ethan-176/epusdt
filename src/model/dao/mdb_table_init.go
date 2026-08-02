@@ -1,6 +1,8 @@
 package dao
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -41,6 +43,9 @@ func MdbTableInit() error {
 			{"Orders", &mdb.Orders{}},
 			{"WalletAddress", &mdb.WalletAddress{}},
 			{"AdminUser", &mdb.AdminUser{}},
+			{"AdminPasskey", &mdb.AdminPasskey{}},
+			{"AdminAuthChallenge", &mdb.AdminAuthChallenge{}},
+			{"AdminLoginThrottle", &mdb.AdminLoginThrottle{}},
 			{"ApiKey", &mdb.ApiKey{}},
 			{"Setting", &mdb.Setting{}},
 			{"NotificationChannel", &mdb.NotificationChannel{}},
@@ -56,15 +61,69 @@ func MdbTableInit() error {
 				return
 			}
 		}
+		if err := backfillAdminPasskeyCredentialHashes(); err != nil {
+			mdbTableInitErr = fmt.Errorf("backfill admin passkey credential hashes: %w", err)
+			return
+		}
+		if err := purgeLegacyAdminCredentialSettings(); err != nil {
+			mdbTableInitErr = fmt.Errorf("purge legacy admin credential settings: %w", err)
+			return
+		}
 
 		seedChains()
 		backfillRpcNodePurpose()
+		disableLegacyProjectRPCNodes()
 		seedRpcNodes()
 		seedChainTokens()
 		seedDefaultSettings()
 		seedTelegramChannelFromSettings()
 	})
 	return mdbTableInitErr
+}
+
+// purgeLegacyAdminCredentialSettings removes bootstrap passwords and the
+// short-lived encrypted-TOTP compatibility key from earlier custom builds.
+// The current authentication model accepts only an operator-provisioned Base32
+// TOTP secret and passkeys, so retaining these values adds needless secrets.
+func purgeLegacyAdminCredentialSettings() error {
+	return Mdb.Unscoped().
+		Where("`key` IN ?", []string{
+			"system.init_admin_password_plain",
+			"system.init_admin_password_hash",
+			"system.init_admin_password_fetched",
+			"system.init_admin_password_changed",
+			"system.admin_auth_encryption_key",
+		}).
+		Delete(&mdb.Setting{}).Error
+}
+
+// backfillAdminPasskeyCredentialHashes upgrades credentials created before
+// credential IDs were indexed by SHA-256. Full WebAuthn credential IDs may
+// exceed MySQL's utf8mb4 index limit; a 64-character hash cannot.
+func backfillAdminPasskeyCredentialHashes() error {
+	var rows []mdb.AdminPasskey
+	if err := Mdb.Where("credential_id_hash IS NULL OR credential_id_hash = ''").Find(&rows).Error; err != nil {
+		return err
+	}
+	for _, row := range rows {
+		sum := sha256.Sum256([]byte(row.CredentialID))
+		hash := hex.EncodeToString(sum[:])
+		if err := Mdb.Model(&mdb.AdminPasskey{}).Where("id = ?", row.ID).Update("credential_id_hash", hash).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// disableLegacyProjectRPCNodes removes the implicit trust placed in the old
+// project-operated manual-verification gateway. Existing operators may add a
+// vetted endpoint again explicitly, but upgrades no longer keep it enabled.
+func disableLegacyProjectRPCNodes() {
+	if err := Mdb.Model(&mdb.RpcNode{}).
+		Where("url LIKE ?", "https://rpc.epusdt.com/%").
+		Update("enabled", false).Error; err != nil {
+		color.Red.Printf("[store_db] disable legacy project rpc nodes err=%s\n", err)
+	}
 }
 
 // seedChains inserts the built-in networks as enabled rows. Uses
@@ -155,9 +214,9 @@ func defaultRpcNodes() []mdb.RpcNode {
 		{Network: mdb.NetworkPlasma, Url: "wss://rpc.plasma.to", Type: mdb.RpcNodeTypeWs, Weight: 1, Enabled: true, Purpose: mdb.RpcNodePurposeGeneral, Status: mdb.RpcNodeStatusUnknown},
 		{Network: mdb.NetworkTon, Url: "https://ton-blockchain.github.io/global.config.json", Type: mdb.RpcNodeTypeLite, Weight: 1, Enabled: true, Purpose: mdb.RpcNodePurposeGeneral, Status: mdb.RpcNodeStatusUnknown},
 		{Network: mdb.NetworkAptos, Url: "https://aptos-rest.publicnode.com/", Type: mdb.RpcNodeTypeHttp, Weight: 1, Enabled: true, Purpose: mdb.RpcNodePurposeGeneral, Status: mdb.RpcNodeStatusUnknown},
-		{Network: mdb.NetworkEthereum, Url: "https://rpc.epusdt.com/ethereum", Type: mdb.RpcNodeTypeHttp, Weight: 1, Enabled: true, Purpose: mdb.RpcNodePurposeManualVerify, Status: mdb.RpcNodeStatusUnknown},
-		{Network: mdb.NetworkBsc, Url: "https://rpc.epusdt.com/binance", Type: mdb.RpcNodeTypeHttp, Weight: 1, Enabled: true, Purpose: mdb.RpcNodePurposeManualVerify, Status: mdb.RpcNodeStatusUnknown},
-		{Network: mdb.NetworkPolygon, Url: "https://rpc.epusdt.com/polygon", Type: mdb.RpcNodeTypeHttp, Weight: 1, Enabled: true, Purpose: mdb.RpcNodePurposeManualVerify, Status: mdb.RpcNodeStatusUnknown},
+		{Network: mdb.NetworkEthereum, Url: "https://ethereum-rpc.publicnode.com", Type: mdb.RpcNodeTypeHttp, Weight: 1, Enabled: true, Purpose: mdb.RpcNodePurposeManualVerify, Status: mdb.RpcNodeStatusUnknown},
+		{Network: mdb.NetworkBsc, Url: "https://bsc-rpc.publicnode.com", Type: mdb.RpcNodeTypeHttp, Weight: 1, Enabled: true, Purpose: mdb.RpcNodePurposeManualVerify, Status: mdb.RpcNodeStatusUnknown},
+		{Network: mdb.NetworkPolygon, Url: "https://polygon-bor-rpc.publicnode.com", Type: mdb.RpcNodeTypeHttp, Weight: 1, Enabled: true, Purpose: mdb.RpcNodePurposeManualVerify, Status: mdb.RpcNodeStatusUnknown},
 	}
 	return defaults
 }

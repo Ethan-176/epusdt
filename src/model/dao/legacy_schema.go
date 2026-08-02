@@ -2,6 +2,7 @@ package dao
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/GMWalletApp/epusdt/model/mdb"
 	"gorm.io/gorm"
@@ -30,15 +31,34 @@ func migrateLegacySchema() error {
 func migrateLegacyWalletAddresses(db *gorm.DB) error {
 	migrator := db.Migrator()
 	model := &mdb.WalletAddress{}
-	if !migrator.HasTable(model) ||
-		!migrator.HasColumn(model, "token") ||
-		migrator.HasColumn(model, "address") {
+	table := model.TableName()
+	if !migrator.HasTable(table) {
+		return nil
+	}
+	hasToken, err := hasPhysicalColumn(db, table, "token")
+	if err != nil {
+		return err
+	}
+	hasAddress, err := hasPhysicalColumn(db, table, "address")
+	if err != nil {
+		return err
+	}
+	if !hasToken || hasAddress {
 		return nil
 	}
 
-	for _, field := range []string{"Network", "Address", "Remark", "Source"} {
-		if !migrator.HasColumn(model, field) {
-			if err := migrator.AddColumn(model, field); err != nil {
+	for _, field := range []struct{ model, column string }{
+		{"Network", "network"},
+		{"Address", "address"},
+		{"Remark", "remark"},
+		{"Source", "source"},
+	} {
+		hasColumn, err := hasPhysicalColumn(db, table, field.column)
+		if err != nil {
+			return err
+		}
+		if !hasColumn {
+			if err := migrator.AddColumn(model, field.model); err != nil {
 				return err
 			}
 		}
@@ -51,41 +71,82 @@ func migrateLegacyWalletAddresses(db *gorm.DB) error {
 	).Error; err != nil {
 		return err
 	}
-	if migrator.HasColumn(model, "description") {
+	hasDescription, err := hasPhysicalColumn(db, table, "description")
+	if err != nil {
+		return err
+	}
+	if hasDescription {
 		if err := db.Exec(
 			"UPDATE wallet_address SET remark = COALESCE(description, '') WHERE remark IS NULL OR remark = ''",
 		).Error; err != nil {
 			return err
 		}
-		if err := migrator.DropColumn(model, "description"); err != nil {
+	}
+	if db.Dialector.Name() == "sqlite" {
+		return rebuildLegacySQLiteWalletAddresses(db)
+	}
+	if hasDescription {
+		if err := db.Exec("ALTER TABLE wallet_address DROP COLUMN description").Error; err != nil {
 			return err
 		}
 	}
 
 	// The old token column is NOT NULL. Keeping it would make every wallet
 	// created by the v1 admin UI fail because v1 writes address instead.
-	return migrator.DropColumn(model, "token")
+	return db.Exec("ALTER TABLE wallet_address DROP COLUMN token").Error
+}
+
+func rebuildLegacySQLiteWalletAddresses(db *gorm.DB) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("ALTER TABLE wallet_address RENAME TO wallet_address_legacy_migration").Error; err != nil {
+			return err
+		}
+		if err := tx.AutoMigrate(&mdb.WalletAddress{}); err != nil {
+			return err
+		}
+		const columns = `id, network, address, status, remark, source, created_at, updated_at, deleted_at`
+		if err := tx.Exec(
+			"INSERT INTO wallet_address (" + columns + ") SELECT " + columns + " FROM wallet_address_legacy_migration",
+		).Error; err != nil {
+			return err
+		}
+		return tx.Exec("DROP TABLE wallet_address_legacy_migration").Error
+	})
 }
 
 func migrateLegacyOrders(db *gorm.DB) error {
 	migrator := db.Migrator()
 	model := &mdb.Orders{}
-	if !migrator.HasTable(model) ||
-		!migrator.HasColumn(model, "token") ||
-		migrator.HasColumn(model, "receive_address") {
+	table := model.TableName()
+	if !migrator.HasTable(table) {
+		return nil
+	}
+	hasToken, err := hasPhysicalColumn(db, table, "token")
+	if err != nil {
+		return err
+	}
+	hasReceiveAddress, err := hasPhysicalColumn(db, table, "receive_address")
+	if err != nil {
+		return err
+	}
+	if !hasToken || hasReceiveAddress {
 		return nil
 	}
 
-	for _, field := range []string{
-		"ReceiveAddress",
-		"Currency",
-		"Network",
-		"Name",
-		"PaymentType",
-		"PayProvider",
+	for _, field := range []struct{ model, column string }{
+		{"ReceiveAddress", "receive_address"},
+		{"Currency", "currency"},
+		{"Network", "network"},
+		{"Name", "name"},
+		{"PaymentType", "payment_type"},
+		{"PayProvider", "pay_provider"},
 	} {
-		if !migrator.HasColumn(model, field) {
-			if err := migrator.AddColumn(model, field); err != nil {
+		hasColumn, err := hasPhysicalColumn(db, table, field.column)
+		if err != nil {
+			return err
+		}
+		if !hasColumn {
+			if err := migrator.AddColumn(model, field.model); err != nil {
 				return err
 			}
 		}
@@ -93,7 +154,7 @@ func migrateLegacyOrders(db *gorm.DB) error {
 
 	// In v0.0.x orders.token stored the TRON receiving address. In v1 it stores
 	// the asset symbol, while receive_address holds the wallet address.
-	return db.Exec(
+	if err := db.Exec(
 		`UPDATE orders
 		 SET receive_address = token,
 		     token = 'USDT',
@@ -105,5 +166,53 @@ func migrateLegacyOrders(db *gorm.DB) error {
 		mdb.NetworkTron,
 		mdb.PaymentTypeGmpay,
 		mdb.PaymentProviderOnChain,
-	).Error
+	).Error; err != nil {
+		return err
+	}
+
+	if db.Dialector.Name() == "sqlite" {
+		return rebuildLegacySQLiteOrders(db)
+	}
+	return nil
+}
+
+// GORM's SQLite table-rebuild parser can omit legacy NOT NULL columns when
+// AutoMigrate changes their constraints. Rebuild the migrated table explicitly
+// so old order identifiers and receiving addresses cannot be lost on upgrade.
+func rebuildLegacySQLiteOrders(db *gorm.DB) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("ALTER TABLE orders RENAME TO orders_legacy_migration").Error; err != nil {
+			return err
+		}
+		if err := tx.AutoMigrate(&mdb.Orders{}); err != nil {
+			return err
+		}
+		const columns = `id, trade_id, order_id, block_transaction_id, actual_amount,
+			amount, token, status, notify_url, redirect_url, callback_num,
+			callback_confirm, created_at, updated_at, deleted_at, receive_address,
+			currency, network, name, payment_type, pay_provider`
+		if err := tx.Exec(
+			"INSERT INTO orders (" + columns + ") SELECT " + columns + " FROM orders_legacy_migration",
+		).Error; err != nil {
+			return err
+		}
+		return tx.Exec("DROP TABLE orders_legacy_migration").Error
+	})
+}
+
+// SQLite's HasColumn implementation performs a LIKE against the entire CREATE
+// TABLE statement. A column such as "address" can therefore falsely match the
+// table name "wallet_address". ColumnTypes reports the physical columns and is
+// consistent across the supported database drivers.
+func hasPhysicalColumn(db *gorm.DB, table, name string) (bool, error) {
+	columns, err := db.Migrator().ColumnTypes(table)
+	if err != nil {
+		return false, err
+	}
+	for _, column := range columns {
+		if strings.EqualFold(column.Name(), name) {
+			return true, nil
+		}
+	}
+	return false, nil
 }

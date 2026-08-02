@@ -47,6 +47,9 @@ func SetupTestDatabases(t testing.TB) func() {
 		&mdb.ChainToken{},
 		&mdb.RpcNode{},
 		&mdb.AdminUser{},
+		&mdb.AdminPasskey{},
+		&mdb.AdminAuthChallenge{},
+		&mdb.AdminLoginThrottle{},
 	)
 	mustMigrate(t, runtimeDB, &mdb.TransactionLock{})
 

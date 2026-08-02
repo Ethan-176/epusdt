@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/GMWalletApp/epusdt/model/data"
@@ -18,6 +19,7 @@ const DefaultExpiration = 24 * time.Hour
 type AdminClaims struct {
 	AdminUserID uint64 `json:"uid"`
 	Username    string `json:"usr"`
+	AuthVersion uint64 `json:"ver"`
 	jwt.RegisteredClaims
 }
 
@@ -42,6 +44,16 @@ func EnsureSecret() (string, error) {
 
 // Sign returns a signed JWT for the given admin user.
 func Sign(userID uint64, username string) (string, error) {
+	user, err := data.GetAdminUserByID(userID)
+	if err != nil {
+		return "", err
+	}
+	return SignWithVersion(userID, username, user.AuthVersion)
+}
+
+// SignWithVersion binds a token to the user's current authentication state so
+// logout, password changes and factor removal revoke all older JWTs.
+func SignWithVersion(userID uint64, username string, authVersion uint64) (string, error) {
 	secret, err := EnsureSecret()
 	if err != nil {
 		return "", err
@@ -49,9 +61,13 @@ func Sign(userID uint64, username string) (string, error) {
 	claims := AdminClaims{
 		AdminUserID: userID,
 		Username:    username,
+		AuthVersion: authVersion,
 		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    "epusdt-admin",
+			Subject:   fmt.Sprintf("admin:%d", userID),
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(DefaultExpiration)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			NotBefore: jwt.NewNumericDate(time.Now().Add(-5 * time.Second)),
 		},
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
@@ -66,13 +82,16 @@ func Parse(tokenStr string) (*AdminClaims, error) {
 	}
 	claims := &AdminClaims{}
 	_, err = jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+		if t.Method != jwt.SigningMethodHS256 {
 			return nil, errors.New("unexpected signing method")
 		}
 		return []byte(secret), nil
 	})
 	if err != nil {
 		return nil, err
+	}
+	if claims.Issuer != "epusdt-admin" || claims.AdminUserID == 0 {
+		return nil, errors.New("invalid admin token claims")
 	}
 	return claims, nil
 }

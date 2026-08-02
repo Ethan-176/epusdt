@@ -314,6 +314,28 @@ func GetAppUri() string {
 	return viper.GetString("app_uri")
 }
 
+// GetAdminWebAuthnOrigins returns the explicitly allowed browser origins for
+// passkeys. When unset, the public app URI is used so WebAuthn never trusts a
+// request-controlled Host/Origin header.
+func GetAdminWebAuthnOrigins() []string {
+	raw := strings.TrimSpace(viper.GetString("admin_webauthn_origins"))
+	if raw == "" {
+		raw = strings.TrimSpace(GetAppUri())
+	}
+	parts := strings.Split(raw, ",")
+	origins := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if origin := strings.TrimRight(strings.TrimSpace(part), "/"); origin != "" {
+			origins = append(origins, origin)
+		}
+	}
+	return origins
+}
+
+func GetAdminWebAuthnRPID() string {
+	return strings.TrimSpace(viper.GetString("admin_webauthn_rp_id"))
+}
+
 func GetRateApiUrl() string {
 	// settings table wins (admin-configurable); .env and env var remain
 	// as fallbacks for smooth migration from the old layout.

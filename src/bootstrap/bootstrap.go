@@ -47,18 +47,11 @@ func InitApp() {
 		if err := data.EnsureDefaultForcedRateList(); err != nil {
 			color.Red.Printf("[bootstrap] seed rate.forced_rate_list err=%s\n", err)
 		}
-		// Seed admin account and JWT secret so the management console is
-		// immediately usable on a fresh install. Both are idempotent.
-		initialPassword, isNew, err := data.EnsureDefaultAdmin()
+		// Seed only the admin identity. The operator provisions the username and
+		// Base32 TOTP secret directly in the database before first sign-in.
+		_, err := data.EnsureDefaultAdmin()
 		if err != nil {
 			color.Red.Printf("[bootstrap] ensure default admin err=%s\n", err)
-		}
-		if isNew {
-			color.Yellow.Println("╔════════════════════════════════════════════════════════════════════════╗")
-			color.Yellow.Println("║  Default admin account created. Save these credentials now.           ║")
-			color.Yellow.Printf("║  Username: %-54s║\n", "admin")
-			color.Yellow.Printf("║  Password: %-54s║\n", initialPassword)
-			color.Yellow.Println("╚════════════════════════════════════════════════════════════════════════╝")
 		}
 		if _, err := appjwt.EnsureSecret(); err != nil {
 			color.Red.Printf("[bootstrap] ensure jwt secret err=%s\n", err)

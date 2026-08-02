@@ -141,7 +141,7 @@ make build BUILD_TAG=v1.0.10-custom
 ./bin/epusdt --config .env http start
 ```
 
-程序第一次创建管理员时会在终端输出用户名和随机密码，请立即保存。
+程序会自动创建默认管理员记录，但后台不接受密码登录。首次使用前必须在数据库的 `admin_users` 表中写入登录名和标准 Base32 TOTP 密钥。
 
 ## 七、传统 Linux 服务器部署
 
@@ -168,6 +168,19 @@ chmod +x epusdt-linux-amd64
 
 新版网页已经嵌入二进制，启动时会在二进制旁边生成 `www/`，不用单独上传前端文件。长期运行建议再配置 systemd，参考 `wiki/manual_RUN.md` 或仓库根目录的 `epctl`。
 
+### 从旧服务器版本升级
+
+不需要把本机数据库同步到服务器。新二进制首次连接服务器原数据库时会自动执行兼容迁移并创建后台认证表。推荐按以下顺序操作：
+
+1. 在服务器确认架构：`uname -m`；`x86_64` 使用 `epusdt-linux-amd64`，`aarch64` 使用 `epusdt-linux-arm64`。
+2. 停止旧进程，备份服务器 `.env`、主数据库和 runtime SQLite 文件；不要用本机测试数据库覆盖服务器业务数据。
+3. 在服务器 `.env` 中确认 `app_uri=https://支付域名`。若后台使用独立域名，则设置 `admin_webauthn_origins=https://后台域名`、`admin_webauthn_rp_id=后台域名`；RP ID 不含协议、端口或路径。
+4. 把新文件上传为临时文件，赋予执行权限，再原子替换旧二进制；保留旧二进制用于回滚。
+5. 启动新程序并检查日志。迁移成功后应出现 `admin_passkeys`、`admin_auth_challenges`、`admin_login_throttles`，`admin_users` 应增加 `totp_secret` 和 `auth_version`。
+6. 在服务器数据库中直接写入管理员登录名和 Base32 TOTP 密钥，然后用生产域名测试动态口令登录并重新注册通行密钥。
+
+本机 `localhost` 注册的通行密钥与 localhost 的 RP ID 绑定，不能复制到生产域名使用。若启动迁移失败，应立即停止新程序、恢复旧二进制及数据库备份，不要在迁移失败状态下继续接收订单。
+
 ## 八、Docker
 
 Docker 是可选项，不影响传统二进制部署。相关文件：
@@ -179,7 +192,32 @@ Docker 是可选项，不影响传统二进制部署。相关文件：
 - `.env.docker.example`：Compose 端口和 MySQL 容器密码。
 - `DEPLOYMENT.md`：完整 Docker 操作说明。
 
-## 九、新 Git 仓库第一次提交
+## 九、后台登录安全
+
+- 后台不接受账号密码登录，只支持“登录名 + 6 位 TOTP 动态口令”或 WebAuthn 通行密钥。
+- 登录名和 TOTP 密钥只能直接写入数据库；后台不提供生成、显示、启用、关闭或更换 TOTP 密钥的接口。
+- `admin_users.totp_secret` 为空时，该账号不能使用动态口令登录，也不能绑定通行密钥。
+- 打开 `/admin-security.html`，输入登录名和有效动态口令即可绑定通行密钥，不需要密码或已有登录会话。
+- 错误次数按账号和客户端 IP 持久化记录：30 分钟窗口内第 5、10、15 次失败分别封禁 15 分钟、2 小时、24 小时，重启服务不能绕过。
+- 退出登录或删除通行密钥会使旧 JWT 立即失效。
+- 后台只接受直接写入数据库的标准 Base32 TOTP 密钥，不再生成或保留初始化密码及旧版认证加密密钥。
+- 通行密钥在非 localhost 环境必须使用 HTTPS。`admin_webauthn_origins` 应填写实际后台 Origin；反向代理有多个合法入口时用英文逗号分隔。`admin_webauthn_rp_id` 通常留空，由 `app_uri` 的域名自动推导。
+- 支付域名和后台域名分离时，`app_uri` 保持支付域名，WebAuthn Origin/RP ID 必须显式填写后台域名；本机或支付域名注册的通行密钥不能用于后台域名。
+- 钱包地址一经创建不可原地修改；后台的 PATCH 钱包接口只能修改备注。更换地址应停用或删除旧地址，再新增并复核新地址。
+
+例如，停服并备份数据库后可执行：
+
+```sql
+UPDATE admin_users
+SET username = 'your-admin-name',
+    totp_secret = 'YOUR_BASE32_TOTP_SECRET',
+    auth_version = auth_version + 1
+WHERE id = 1;
+```
+
+请严格限制数据库文件和数据库账号权限；直接保存的 Base32 TOTP 密钥等同于登录凭据。写入后先用认证器生成动态口令测试登录，再绑定至少一把通行密钥。RPC 节点会影响人工交易核验，生产环境应配置两个以上不同运营方的节点交叉验证。
+
+## 十、新 Git 仓库第一次提交
 
 确认敏感文件没有出现：
 

@@ -63,7 +63,6 @@ func TestMigrateLegacySchema(t *testing.T) {
 	).Error; err != nil {
 		t.Fatalf("seed order: %v", err)
 	}
-
 	if err := migrateLegacySchema(); err != nil {
 		t.Fatalf("migrate legacy schema: %v", err)
 	}

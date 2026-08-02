@@ -21,7 +21,6 @@ package install
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -70,8 +69,6 @@ type InstallRequest struct {
 type InstallSubmitResponse struct {
 	// Completion message for the install request.
 	Message string `json:"message" example:"install complete, starting server…"`
-	// Initial admin password, returned only while the plaintext is still available.
-	InitPassword string `json:"init_password,omitempty" example:"a1b2c3d4e5f6"`
 }
 
 // InstallDefaults returns sensible default values for the install form.
@@ -171,7 +168,7 @@ func (h *installHandler) GetDefaults(c echo.Context) error {
 // the http_listen config key (e.g. 0.0.0.0:8000).
 //
 // @Summary      Install — submit configuration
-// @Description  Validates the submitted configuration, writes install=true, performs the minimum DB setup needed to ensure the default admin exists, optionally returns init_password, then rewrites install=false before shutting down the install server.
+// @Description  Validates the submitted configuration, writes install=true, performs the minimum DB setup needed to ensure the default admin identity exists, then rewrites install=false before shutting down the install server. Authentication material must be provisioned directly in the database.
 // @Description  http_bind_addr + http_bind_port are joined internally as "ADDR:PORT" for http_listen. app_uri is required; other fields fall back to GET /api/install/defaults.
 // @Tags         Install
 // @Accept       json
@@ -220,8 +217,7 @@ func (h *installHandler) Submit(c echo.Context) error {
 	if err := writeEnvFile(h.envFilePath, req, true); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 	}
-	initPassword, err := initializeInstallState(h.envFilePath)
-	if err != nil {
+	if err := initializeInstallState(h.envFilePath); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 	}
 	if err := writeEnvFile(h.envFilePath, req, false); err != nil {
@@ -230,8 +226,7 @@ func (h *installHandler) Submit(c echo.Context) error {
 
 	go func() { close(h.done) }()
 	return c.JSON(http.StatusOK, InstallSubmitResponse{
-		Message:      "install complete, starting server…",
-		InitPassword: initPassword,
+		Message: "install complete, starting server…",
 	})
 }
 
@@ -365,36 +360,17 @@ func writeEnvFile(path string, r *InstallRequest, installEnabled bool) error {
 	return nil
 }
 
-func initializeInstallState(envFilePath string) (string, error) {
+func initializeInstallState(envFilePath string) error {
 	if err := initInstallConfig(envFilePath); err != nil {
-		return "", err
+		return err
 	}
 	if err := initInstallDatabases(); err != nil {
 		closeInstallDatabases()
-		return "", err
+		return err
 	}
 	defer closeInstallDatabases()
-
-	password, created, err := data.EnsureDefaultAdmin()
-	if err != nil {
-		return "", err
-	}
-	if created {
-		password = strings.TrimSpace(password)
-		if password == "" {
-			return "", errors.New("default admin created without initial password")
-		}
-		return password, nil
-	}
-
-	password, err = data.GetInitialAdminPassword()
-	if err != nil {
-		if errors.Is(err, data.ErrInitAdminPasswordUnavailable) || errors.Is(err, data.ErrInitAdminPasswordAlreadyFetched) {
-			return "", nil
-		}
-		return "", err
-	}
-	return strings.TrimSpace(password), nil
+	_, err := data.EnsureDefaultAdmin()
+	return err
 }
 
 func initInstallConfig(envFilePath string) (err error) {
