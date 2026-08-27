@@ -31,6 +31,13 @@ var httpCmd = &cobra.Command{
 	},
 }
 
+var webFilesystem http.FileSystem
+
+// SetWebFilesystem installs the read-only SPA embedded in the executable.
+func SetWebFilesystem(filesystem http.FileSystem) {
+	webFilesystem = filesystem
+}
+
 func init() {
 	httpCmd.AddCommand(startCmd)
 }
@@ -64,15 +71,15 @@ func HttpServerStart() {
 	route.RegisterRoute(e)
 	e.Static(config.StaticPath, config.StaticFilePath)
 
-	// Resolve www/ relative to the executable so SPA routes work regardless
-	// of the working directory. main.go extracts www/ next to the binary.
+	// Prefer the read-only SPA embedded in the executable. The disk fallback is
+	// retained for package-level tests and non-standard integrations.
 	wwwRoot := "./www"
 	if exePath, err := os.Executable(); err == nil {
 		if exePath, err = filepath.EvalSymlinks(exePath); err == nil {
 			wwwRoot = filepath.Join(filepath.Dir(exePath), "www")
 		}
 	}
-	e.Use(echoMiddleware.StaticWithConfig(echoMiddleware.StaticConfig{
+	staticConfig := echoMiddleware.StaticConfig{
 		Skipper: func(c echo.Context) bool {
 			path := c.Request().URL.Path
 			if path == "/install" || strings.HasPrefix(path, "/install/") {
@@ -85,7 +92,12 @@ func HttpServerStart() {
 		HTML5: true,
 		Index: "index.html",
 		Root:  wwwRoot,
-	}))
+	}
+	if webFilesystem != nil {
+		staticConfig.Filesystem = webFilesystem
+		staticConfig.Root = "."
+	}
+	e.Use(echoMiddleware.StaticWithConfig(staticConfig))
 
 	httpListen := viper.GetString("http_listen")
 	go func() {
