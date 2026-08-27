@@ -51,6 +51,9 @@ func Init() {
 	if err != nil {
 		panic(err)
 	}
+	if _, _, err = PaymentWalletAllowlist(); err != nil {
+		panic(err)
+	}
 	HTTPAccessLog = viper.GetBool("http_access_log")
 	SQLDebug = viper.GetBool("sql_debug")
 	LogLevel = normalizeLogLevel(viper.GetString("log_level"))

@@ -8,6 +8,7 @@ import (
 	"github.com/GMWalletApp/epusdt/model/dao"
 	"github.com/GMWalletApp/epusdt/model/mdb"
 	"github.com/GMWalletApp/epusdt/util/constant"
+	"github.com/spf13/viper"
 	"github.com/xssnick/tonutils-go/address"
 )
 
@@ -118,5 +119,119 @@ func TestAddWalletAddressWithNetworkNormalizesMoveAddressVariants(t *testing.T) 
 	}
 	if _, err = AddWalletAddressWithNetwork(mdb.NetworkAptos, "0x0A"); err != constant.WalletAddressAlreadyExists {
 		t.Fatalf("add equivalent aptos wallet error = %v, want already exists", err)
+	}
+}
+
+func TestAvailableWalletsFilterDeploymentAllowlist(t *testing.T) {
+	cleanup := testutil.SetupTestDatabases(t)
+	defer cleanup()
+	viper.Reset()
+	defer viper.Reset()
+
+	allowed := "0x1111111111111111111111111111111111111111"
+	blocked := "0x2222222222222222222222222222222222222222"
+	viper.Set("payment_wallet_allowlist", "ethereum:"+allowed)
+
+	for _, addr := range []string{allowed, blocked} {
+		if err := dao.Mdb.Create(&mdb.WalletAddress{
+			Network: mdb.NetworkEthereum,
+			Address: addr,
+			Status:  mdb.TokenStatusEnable,
+		}).Error; err != nil {
+			t.Fatalf("seed wallet %s: %v", addr, err)
+		}
+	}
+
+	rows, err := GetAvailableWalletAddressByNetwork(mdb.NetworkEthereum)
+	if err != nil {
+		t.Fatalf("get available wallets: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Address != allowed {
+		t.Fatalf("available wallets = %#v, want only allowlisted address", rows)
+	}
+
+	violations, err := GetWalletAllowlistViolations()
+	if err != nil {
+		t.Fatalf("get allowlist violations: %v", err)
+	}
+	if len(violations) != 1 || violations[0].Address != blocked {
+		t.Fatalf("violations = %#v, want blocked address", violations)
+	}
+}
+
+func TestAddAndEnableWalletRejectDeploymentAllowlistViolation(t *testing.T) {
+	cleanup := testutil.SetupTestDatabases(t)
+	defer cleanup()
+	viper.Reset()
+	defer viper.Reset()
+
+	allowed := "0x1111111111111111111111111111111111111111"
+	blocked := "0x2222222222222222222222222222222222222222"
+	viper.Set("payment_wallet_allowlist", "ethereum:"+allowed)
+
+	if _, err := AddWalletAddressWithNetwork(mdb.NetworkEthereum, blocked); err != constant.WalletAddressNotAllowedErr {
+		t.Fatalf("add blocked wallet error = %v, want allowlist error", err)
+	}
+	row := &mdb.WalletAddress{Network: mdb.NetworkEthereum, Address: blocked, Status: mdb.TokenStatusDisable}
+	if err := dao.Mdb.Create(row).Error; err != nil {
+		t.Fatalf("seed blocked wallet: %v", err)
+	}
+	if err := ChangeWalletAddressStatus(row.ID, mdb.TokenStatusEnable); err != constant.WalletAddressNotAllowedErr {
+		t.Fatalf("enable blocked wallet error = %v, want allowlist error", err)
+	}
+}
+
+func TestGetSelectableWalletAddressesPinsEnabledAllowlistedWallet(t *testing.T) {
+	cleanup := testutil.SetupTestDatabases(t)
+	defer cleanup()
+
+	first, err := AddWalletAddressWithNetwork(mdb.NetworkTron, "TSelectableWalletAddress001")
+	if err != nil {
+		t.Fatalf("add first wallet: %v", err)
+	}
+	second, err := AddWalletAddressWithNetwork(mdb.NetworkTron, "TSelectableWalletAddress002")
+	if err != nil {
+		t.Fatalf("add second wallet: %v", err)
+	}
+
+	rows, err := GetSelectableWalletAddresses(mdb.NetworkTron, second.ID)
+	if err != nil {
+		t.Fatalf("select wallet: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ID != second.ID || rows[0].ID == first.ID {
+		t.Fatalf("selected wallets = %#v, want only id=%d", rows, second.ID)
+	}
+}
+
+func TestGetSelectableWalletAddressesRejectsDisabledWrongNetworkAndBlockedWallet(t *testing.T) {
+	cleanup := testutil.SetupTestDatabases(t)
+	defer cleanup()
+
+	disabled := &mdb.WalletAddress{
+		Network: mdb.NetworkTron,
+		Address: "TDisabledSelectableWallet001",
+		Status:  mdb.TokenStatusDisable,
+	}
+	if err := dao.Mdb.Create(disabled).Error; err != nil {
+		t.Fatalf("seed disabled wallet: %v", err)
+	}
+	if _, err := GetSelectableWalletAddresses(mdb.NetworkTron, disabled.ID); err != constant.WalletSelectionUnavailableErr {
+		t.Fatalf("disabled selection error = %v, want %v", err, constant.WalletSelectionUnavailableErr)
+	}
+	if _, err := GetSelectableWalletAddresses(mdb.NetworkEthereum, disabled.ID); err != constant.WalletSelectionUnavailableErr {
+		t.Fatalf("wrong-network selection error = %v, want %v", err, constant.WalletSelectionUnavailableErr)
+	}
+
+	blocked := &mdb.WalletAddress{
+		Network: mdb.NetworkEthereum,
+		Address: "0x2222222222222222222222222222222222222222",
+		Status:  mdb.TokenStatusEnable,
+	}
+	if err := dao.Mdb.Create(blocked).Error; err != nil {
+		t.Fatalf("seed blocked wallet: %v", err)
+	}
+	viper.Set("payment_wallet_allowlist", "ethereum:0x1111111111111111111111111111111111111111")
+	if _, err := GetSelectableWalletAddresses(mdb.NetworkEthereum, blocked.ID); err != constant.WalletAddressNotAllowedErr {
+		t.Fatalf("blocked selection error = %v, want %v", err, constant.WalletAddressNotAllowedErr)
 	}
 }

@@ -22,6 +22,11 @@ func InitApp() {
 		config.Init()
 		log.Init()
 		dao.Init()
+		if violations, err := data.GetWalletAllowlistViolations(); err != nil {
+			color.Red.Printf("[security] validate payment wallet allowlist err=%s\n", err)
+		} else if len(violations) > 0 {
+			log.Sugar.Errorf("[security] %d database wallet address(es) are outside payment_wallet_allowlist and will not receive new orders", len(violations))
+		}
 		logLevel := data.GetSettingString(mdb.SettingKeySystemLogLevel, mdb.SettingDefaultSystemLogLevel)
 		if err := log.SetLevel(logLevel); err != nil {
 			color.Red.Printf("[bootstrap] apply log level setting %q err=%s; fallback=%s\n", logLevel, err, mdb.SettingDefaultSystemLogLevel)

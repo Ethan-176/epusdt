@@ -7,6 +7,7 @@ import (
 	"github.com/GMWalletApp/epusdt/model/dao"
 	"github.com/GMWalletApp/epusdt/model/data"
 	"github.com/GMWalletApp/epusdt/model/mdb"
+	addressutil "github.com/GMWalletApp/epusdt/util/address"
 	"github.com/GMWalletApp/epusdt/util/constant"
 	"github.com/labstack/echo/v4"
 )
@@ -109,6 +110,9 @@ func (c *BaseAdminController) AdminAddWallet(ctx echo.Context) error {
 	}
 	if err := c.ValidateStruct(ctx, req); err != nil {
 		return c.FailJson(ctx, err)
+	}
+	if _, err := addressutil.NormalizeWalletAddress(req.Network, req.Address); err != nil {
+		return c.FailJson(ctx, constant.WalletAddressInvalidErr)
 	}
 	row, err := data.AddWalletAddressWithNetwork(req.Network, req.Address)
 	if err != nil {
@@ -267,6 +271,11 @@ func (c *BaseAdminController) AdminBatchImportWallets(ctx echo.Context) error {
 	}
 	out := make([]result, 0, len(req.Addresses))
 	for _, addr := range req.Addresses {
+		if _, err := addressutil.NormalizeWalletAddress(req.Network, addr); err != nil {
+			code, msg := constant.ResolveErrno(constant.WalletAddressInvalidErr)
+			out = append(out, result{Address: addr, OK: false, ErrorCode: code, Error: msg})
+			continue
+		}
 		row, err := data.AddWalletAddressWithNetwork(req.Network, addr)
 		if err != nil {
 			code, msg := constant.ResolveErrno(err)

@@ -623,7 +623,7 @@ func TestAdminWallets_CRUD(t *testing.T) {
 	// Add a new wallet.
 	rec = doPostAdmin(e, "/admin/api/v1/wallets", map[string]interface{}{
 		"network": "ethereum",
-		"address": "0xTestEthAddress001",
+		"address": "0x1111111111111111111111111111111111111111",
 	}, token)
 	t.Logf("AddWallet: %s", rec.Body.String())
 	resp2 := assertOK(t, rec)
@@ -664,10 +664,20 @@ func TestAdminWallets_BatchImport(t *testing.T) {
 	e, token := setupAdminTestEnv(t)
 	rec := doPostAdmin(e, "/admin/api/v1/wallets/batch-import", map[string]interface{}{
 		"network":   "ethereum",
-		"addresses": []string{"0xBatchAddr001", "0xBatchAddr002"},
+		"addresses": []string{"0x2222222222222222222222222222222222222222", "0x3333333333333333333333333333333333333333"},
 	}, token)
 	t.Logf("BatchImportWallets: %s", rec.Body.String())
-	assertOK(t, rec)
+	resp := assertOK(t, rec)
+	rows, _ := resp["data"].([]interface{})
+	if len(rows) != 2 {
+		t.Fatalf("batch import rows = %d, want 2", len(rows))
+	}
+	for _, item := range rows {
+		row, _ := item.(map[string]interface{})
+		if ok, _ := row["ok"].(bool); !ok {
+			t.Fatalf("batch import row failed: %#v", row)
+		}
+	}
 }
 
 // ─── Orders ──────────────────────────────────────────────────────────────────

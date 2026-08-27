@@ -5,10 +5,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/GMWalletApp/epusdt/config"
 	"github.com/GMWalletApp/epusdt/model/dao"
 	"github.com/GMWalletApp/epusdt/model/mdb"
 	"github.com/GMWalletApp/epusdt/model/request"
 	addressutil "github.com/GMWalletApp/epusdt/util/address"
+	"github.com/GMWalletApp/epusdt/util/constant"
 	"github.com/dromara/carbon/v2"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
@@ -98,6 +100,9 @@ func lockAmountDecimal(lock mdb.TransactionLock) decimal.Decimal {
 func GetOrderInfoByOrderId(orderId string) (*mdb.Orders, error) {
 	order := new(mdb.Orders)
 	err := dao.Mdb.Model(order).Limit(1).Find(order, "order_id = ?", orderId).Error
+	if err == nil {
+		err = ValidateOrderWalletAllowlist(order)
+	}
 	return order, err
 }
 
@@ -105,7 +110,30 @@ func GetOrderInfoByOrderId(orderId string) (*mdb.Orders, error) {
 func GetOrderInfoByTradeId(tradeId string) (*mdb.Orders, error) {
 	order := new(mdb.Orders)
 	err := dao.Mdb.Model(order).Limit(1).Find(order, "trade_id = ?", tradeId).Error
+	if err == nil {
+		err = ValidateOrderWalletAllowlist(order)
+	}
 	return order, err
+}
+
+// ValidateOrderWalletAllowlist prevents a database-side receive_address
+// rewrite from reaching the cashier, scanners, callbacks, or admin actions.
+// Provider orders and wait-select placeholders do not contain on-chain wallet
+// addresses and are therefore excluded.
+func ValidateOrderWalletAllowlist(order *mdb.Orders) error {
+	if order == nil || order.ID == 0 {
+		return nil
+	}
+	if order.PayProvider != "" && order.PayProvider != mdb.PaymentProviderOnChain {
+		return nil
+	}
+	if order.Status == mdb.StatusWaitSelect && strings.TrimSpace(order.ReceiveAddress) == "" {
+		return nil
+	}
+	if !config.IsPaymentWalletAllowed(order.Network, order.ReceiveAddress) {
+		return constant.WalletAddressNotAllowedErr
+	}
+	return nil
 }
 
 // CreateOrderWithTransaction creates an order in the active database transaction.

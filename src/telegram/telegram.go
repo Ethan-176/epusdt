@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/GMWalletApp/epusdt/config"
 	"github.com/GMWalletApp/epusdt/model/data"
 	"github.com/GMWalletApp/epusdt/util/log"
 	tb "gopkg.in/telebot.v3"
@@ -75,6 +76,10 @@ func reloadBot(reason string) error {
 	if bots != nil {
 		bots.Stop()
 		bots = nil
+	}
+	if !config.TelegramWalletManagementEnabled() {
+		log.Sugar.Infof("[telegram] wallet command bot disabled by configuration (reason=%s)", reason)
+		return nil
 	}
 
 	cfg, source, err := loadCommandBotConfig()

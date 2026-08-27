@@ -414,6 +414,10 @@ func closeInstallDatabases() {
 
 var envTemplate = template.Must(template.New("env").Parse(`app_name={{.AppName}}
 app_uri={{.AppURI}}
+admin_webauthn_origins=
+admin_webauthn_rp_id=
+payment_wallet_allowlist=
+telegram_wallet_management_enabled=false
 log_level=info
 http_access_log=false
 sql_debug=false

@@ -3,6 +3,7 @@ package data
 import (
 	"strings"
 
+	"github.com/GMWalletApp/epusdt/config"
 	"github.com/GMWalletApp/epusdt/model/dao"
 	"github.com/GMWalletApp/epusdt/model/mdb"
 	addressutil "github.com/GMWalletApp/epusdt/util/address"
@@ -54,6 +55,9 @@ func AddWalletAddressWithNetwork(network, address string) (*mdb.WalletAddress, e
 	address, err = normalizeWalletAddressByNetworkE(network, address)
 	if err != nil {
 		return nil, err
+	}
+	if !config.IsPaymentWalletAllowed(network, address) {
+		return nil, constant.WalletAddressNotAllowedErr
 	}
 
 	exist, err := GetWalletAddressByNetworkAndAddress(network, address)
@@ -129,7 +133,10 @@ func DeleteWalletAddressById(id uint64) error {
 func GetAvailableWalletAddress() ([]mdb.WalletAddress, error) {
 	var WalletAddressList []mdb.WalletAddress
 	err := dao.Mdb.Model(WalletAddressList).Where("status = ?", mdb.TokenStatusEnable).Find(&WalletAddressList).Error
-	return WalletAddressList, err
+	if err != nil {
+		return nil, err
+	}
+	return filterPaymentWalletAllowlist(WalletAddressList), nil
 }
 
 // GetAvailableWalletAddressByNetwork 获得指定网络的所有可用钱包地址
@@ -154,7 +161,51 @@ func GetAvailableWalletAddressByNetwork(network string) ([]mdb.WalletAddress, er
 			}
 		}
 	}
-	return list, err
+	return filterPaymentWalletAllowlist(list), nil
+}
+
+// GetSelectableWalletAddresses returns the enabled, allowlisted wallet rows
+// eligible for order allocation. When walletID is non-zero, the result is
+// pinned to that exact admin-managed row instead of falling back to another
+// address. This keeps the merchant selector from becoming a way to submit an
+// arbitrary receive address.
+func GetSelectableWalletAddresses(network string, walletID uint64) ([]mdb.WalletAddress, error) {
+	network = normalizeWalletNetwork(network)
+	if walletID == 0 {
+		return GetAvailableWalletAddressByNetwork(network)
+	}
+
+	wallet, err := GetWalletAddressById(walletID)
+	if err != nil {
+		return nil, err
+	}
+	if wallet.ID == 0 {
+		return nil, constant.WalletNotFoundErr
+	}
+	if normalizeWalletNetwork(wallet.Network) != network || wallet.Status != mdb.TokenStatusEnable {
+		return nil, constant.WalletSelectionUnavailableErr
+	}
+
+	normalizedAddress, err := normalizeWalletAddressByNetworkE(network, wallet.Address)
+	if err != nil {
+		return nil, constant.WalletAddressInvalidErr
+	}
+	if !config.IsPaymentWalletAllowed(network, normalizedAddress) {
+		return nil, constant.WalletAddressNotAllowedErr
+	}
+	wallet.Network = network
+	wallet.Address = normalizedAddress
+	return []mdb.WalletAddress{*wallet}, nil
+}
+
+func filterPaymentWalletAllowlist(list []mdb.WalletAddress) []mdb.WalletAddress {
+	filtered := make([]mdb.WalletAddress, 0, len(list))
+	for _, wallet := range list {
+		if config.IsPaymentWalletAllowed(wallet.Network, wallet.Address) {
+			filtered = append(filtered, wallet)
+		}
+	}
+	return filtered
 }
 
 // GetAllWalletAddress 获得所有钱包地址
@@ -188,6 +239,42 @@ func GetAllWalletAddressByNetwork(network string) ([]mdb.WalletAddress, error) {
 
 // ChangeWalletAddressStatus 启用禁用钱包
 func ChangeWalletAddressStatus(id uint64, status int) error {
+	if status == mdb.TokenStatusEnable {
+		wallet, err := GetWalletAddressById(id)
+		if err != nil {
+			return err
+		}
+		if wallet.ID == 0 {
+			return constant.WalletNotFoundErr
+		}
+		if !config.IsPaymentWalletAllowed(wallet.Network, wallet.Address) {
+			return constant.WalletAddressNotAllowedErr
+		}
+	}
 	err := dao.Mdb.Model(&mdb.WalletAddress{}).Where("id = ?", id).Update("status", status).Error
 	return err
+}
+
+// GetWalletAllowlistViolations reports database rows that can never receive a
+// new order under the deployment allowlist. Rows remain visible in the admin
+// UI for investigation, but selection functions filter them out.
+func GetWalletAllowlistViolations() ([]mdb.WalletAddress, error) {
+	_, configured, err := config.PaymentWalletAllowlist()
+	if err != nil {
+		return nil, err
+	}
+	if !configured {
+		return nil, nil
+	}
+	rows, err := GetAllWalletAddress()
+	if err != nil {
+		return nil, err
+	}
+	violations := make([]mdb.WalletAddress, 0)
+	for _, wallet := range rows {
+		if !config.IsPaymentWalletAllowed(wallet.Network, wallet.Address) {
+			violations = append(violations, wallet)
+		}
+	}
+	return violations, nil
 }

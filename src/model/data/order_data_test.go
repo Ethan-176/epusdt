@@ -7,7 +7,10 @@ import (
 	"time"
 
 	"github.com/GMWalletApp/epusdt/internal/testutil"
+	"github.com/GMWalletApp/epusdt/model/dao"
 	"github.com/GMWalletApp/epusdt/model/mdb"
+	"github.com/GMWalletApp/epusdt/util/constant"
+	"github.com/spf13/viper"
 	"github.com/xssnick/tonutils-go/address"
 )
 
@@ -209,5 +212,54 @@ func TestAptosTransactionLockAddressUsesCanonicalKey(t *testing.T) {
 	}
 	if gotTradeID != "trade-aptos" {
 		t.Fatalf("aptos lock lookup = %q, want trade-aptos", gotTradeID)
+	}
+}
+
+func TestGetOrderRejectsDatabaseAddressRewriteOutsideDeploymentAllowlist(t *testing.T) {
+	cleanup := testutil.SetupTestDatabases(t)
+	defer cleanup()
+	viper.Reset()
+	defer viper.Reset()
+
+	allowed := "0x1111111111111111111111111111111111111111"
+	blocked := "0x2222222222222222222222222222222222222222"
+	viper.Set("payment_wallet_allowlist", "ethereum:"+allowed)
+
+	order := &mdb.Orders{
+		TradeId:        "allowlist-order-rewrite",
+		OrderId:        "allowlist-merchant-order",
+		Network:        mdb.NetworkEthereum,
+		Token:          "USDT",
+		ReceiveAddress: allowed,
+		Status:         mdb.StatusWaitPay,
+		PayProvider:    mdb.PaymentProviderOnChain,
+	}
+	if err := dao.Mdb.Create(order).Error; err != nil {
+		t.Fatalf("create order: %v", err)
+	}
+	if _, err := GetOrderInfoByTradeId(order.TradeId); err != nil {
+		t.Fatalf("load allowlisted order: %v", err)
+	}
+
+	if err := dao.Mdb.Model(&mdb.Orders{}).Where("id = ?", order.ID).Update("receive_address", blocked).Error; err != nil {
+		t.Fatalf("simulate database address rewrite: %v", err)
+	}
+	if _, err := GetOrderInfoByTradeId(order.TradeId); err != constant.WalletAddressNotAllowedErr {
+		t.Fatalf("rewritten order error = %v, want deployment allowlist error", err)
+	}
+}
+
+func TestOrderAllowlistAllowsWaitSelectAndProviderOrders(t *testing.T) {
+	viper.Reset()
+	defer viper.Reset()
+	viper.Set("payment_wallet_allowlist", "ethereum:0x1111111111111111111111111111111111111111")
+
+	waitSelect := &mdb.Orders{BaseModel: mdb.BaseModel{ID: 1}, Status: mdb.StatusWaitSelect, PayProvider: mdb.PaymentProviderOnChain}
+	if err := ValidateOrderWalletAllowlist(waitSelect); err != nil {
+		t.Fatalf("wait-select order rejected: %v", err)
+	}
+	provider := &mdb.Orders{BaseModel: mdb.BaseModel{ID: 2}, Status: mdb.StatusWaitPay, PayProvider: mdb.PaymentProviderOkPay, ReceiveAddress: "OKPAY"}
+	if err := ValidateOrderWalletAllowlist(provider); err != nil {
+		t.Fatalf("provider order rejected: %v", err)
 	}
 }
