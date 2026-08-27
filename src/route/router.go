@@ -167,6 +167,14 @@ func RegisterRoute(e *echo.Echo) {
 		notifyURL := getString(params, "notify_url")
 		outTradeNo := getString(params, "out_trade_no")
 		returnURL := getString(params, "return_url")
+		walletIDRaw := strings.TrimSpace(getString(params, "wallet_id"))
+		var walletID uint64
+		if walletIDRaw != "" {
+			walletID, err = strconv.ParseUint(walletIDRaw, 10, 64)
+			if err != nil || walletID == 0 {
+				return comm.Ctrl.FailJson(ctx, constant.ParamsMarshalErr)
+			}
+		}
 		selectorToken, selectorNetwork, selectorMatched, err := resolveEPayTypeSelector(epayType)
 		if err != nil {
 			return comm.Ctrl.FailJson(ctx, constant.SystemErr)
@@ -211,6 +219,9 @@ func RegisterRoute(e *echo.Echo) {
 			"signature":    signstr,
 			"name":         name,
 			"payment_type": mdb.PaymentTypeEpay,
+		}
+		if walletID > 0 {
+			body["wallet_id"] = walletID
 		}
 
 		ctx.Set("request_body", body)

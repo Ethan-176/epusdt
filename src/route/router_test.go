@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -310,6 +311,45 @@ func TestCreateOrderGmpayV1Solana(t *testing.T) {
 		t.Errorf("expected solana address, got: %v", data["receive_address"])
 	}
 	t.Logf("Order created: trade_id=%v address=%v amount=%v", data["trade_id"], data["receive_address"], data["actual_amount"])
+}
+
+func TestCreateOrderGmpayPinsSignedWalletID(t *testing.T) {
+	e := setupTestEnv(t)
+
+	wallet := &mdb.WalletAddress{
+		Network: mdb.NetworkTron,
+		Address: "TTestTronAddressSelected002",
+		Status:  mdb.TokenStatusEnable,
+	}
+	if err := dao.Mdb.Create(wallet).Error; err != nil {
+		t.Fatalf("seed selected wallet: %v", err)
+	}
+
+	body := signBody(map[string]interface{}{
+		"order_id":   "test-wallet-id-001",
+		"amount":     1.00,
+		"token":      "usdt",
+		"currency":   "cny",
+		"network":    "tron",
+		"wallet_id":  wallet.ID,
+		"notify_url": "https://93.184.216.34/notify",
+	})
+	rec := doPost(e, "/payments/gmpay/v1/order/create-transaction", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Data struct {
+			ReceiveAddress string `json:"receive_address"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Data.ReceiveAddress != wallet.Address {
+		t.Fatalf("receive address = %q, want selected wallet %q", resp.Data.ReceiveAddress, wallet.Address)
+	}
 }
 
 func TestCreateOrderGmpayRejectsPrivateNotifyURL(t *testing.T) {
@@ -1287,6 +1327,46 @@ func TestEpaySubmitPhpGetCompatible(t *testing.T) {
 	}
 	if order.RedirectUrl != "http://localhost/return" {
 		t.Fatalf("stored redirect_url = %q, want merchant raw return_url", order.RedirectUrl)
+	}
+}
+
+func TestEpaySubmitPhpPinsSignedWalletID(t *testing.T) {
+	e := setupTestEnv(t)
+
+	wallet := &mdb.WalletAddress{
+		Network: mdb.NetworkTron,
+		Address: "TTestEpaySelectedAddress002",
+		Status:  mdb.TokenStatusEnable,
+	}
+	if err := dao.Mdb.Create(wallet).Error; err != nil {
+		t.Fatalf("seed selected epay wallet: %v", err)
+	}
+
+	values := signEpayValues(url.Values{
+		"pid":          {"1"},
+		"name":         {"epay-wallet-id-001"},
+		"type":         {"usdt.tron"},
+		"money":        {"1.00"},
+		"out_trade_no": {"epay-wallet-id-001"},
+		"notify_url":   {"https://93.184.216.34/notify"},
+		"return_url":   {"http://localhost/return"},
+		"wallet_id":    {strconv.FormatUint(wallet.ID, 10)},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/payments/epay/v1/order/create-transaction/submit.php?"+values.Encode(), nil)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("expected 302, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	tradeID := strings.TrimPrefix(rec.Header().Get("Location"), "/pay/checkout-counter/")
+	order, err := data.GetOrderInfoByTradeId(tradeID)
+	if err != nil {
+		t.Fatalf("reload selected epay order: %v", err)
+	}
+	if order.ReceiveAddress != wallet.Address {
+		t.Fatalf("receive address = %q, want selected wallet %q", order.ReceiveAddress, wallet.Address)
 	}
 }
 

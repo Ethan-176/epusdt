@@ -213,6 +213,62 @@ func TestCreateTransactionAssignsIncrementedAmountsAndLocks(t *testing.T) {
 	}
 }
 
+func TestCreateTransactionPinsRequestedWalletID(t *testing.T) {
+	cleanup := testutil.SetupTestDatabases(t)
+	defer cleanup()
+
+	first, err := data.AddWalletAddress("TOrderSelectableWalletAddress001")
+	if err != nil {
+		t.Fatalf("add first wallet: %v", err)
+	}
+	second, err := data.AddWalletAddress("TOrderSelectableWalletAddress002")
+	if err != nil {
+		t.Fatalf("add second wallet: %v", err)
+	}
+
+	req := newCreateTransactionRequest("order_selected_wallet_1", 1)
+	req.WalletID = second.ID
+	resp, err := CreateTransaction(req, nil)
+	if err != nil {
+		t.Fatalf("create selected-wallet transaction: %v", err)
+	}
+	if resp.ReceiveAddress != second.Address || resp.ReceiveAddress == first.Address {
+		t.Fatalf("receive address = %q, want selected wallet %q", resp.ReceiveAddress, second.Address)
+	}
+}
+
+func TestCreateTransactionRejectsUnavailableRequestedWalletID(t *testing.T) {
+	cleanup := testutil.SetupTestDatabases(t)
+	defer cleanup()
+
+	wallet, err := data.AddWalletAddress("TOrderDisabledWalletAddress001")
+	if err != nil {
+		t.Fatalf("add wallet: %v", err)
+	}
+	if err := data.ChangeWalletAddressStatus(wallet.ID, mdb.TokenStatusDisable); err != nil {
+		t.Fatalf("disable wallet: %v", err)
+	}
+
+	req := newCreateTransactionRequest("order_disabled_wallet_1", 1)
+	req.WalletID = wallet.ID
+	if _, err := CreateTransaction(req, nil); err != constant.WalletSelectionUnavailableErr {
+		t.Fatalf("create transaction error = %v, want %v", err, constant.WalletSelectionUnavailableErr)
+	}
+}
+
+func TestCreateTransactionRejectsWalletIDOnPlaceholder(t *testing.T) {
+	cleanup := testutil.SetupTestDatabases(t)
+	defer cleanup()
+
+	req := newCreateTransactionRequest("order_placeholder_wallet_1", 1)
+	req.Token = ""
+	req.Network = ""
+	req.WalletID = 1
+	if _, err := CreateTransaction(req, nil); err != constant.ParamsMarshalErr {
+		t.Fatalf("create placeholder error = %v, want %v", err, constant.ParamsMarshalErr)
+	}
+}
+
 func TestCreateTransactionUsesConfiguredAmountPrecision(t *testing.T) {
 	cleanup := testutil.SetupTestDatabases(t)
 	defer cleanup()

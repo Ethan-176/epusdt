@@ -13,6 +13,10 @@ type CreateTransactionRequest struct {
 	Signature   string  `json:"signature" form:"signature" validate:"required" example:"a1b2c3d4e5f6..."`
 	RedirectUrl string  `json:"redirect_url" form:"redirect_url" example:"https://example.com/success"`
 	Name        string  `json:"name" form:"name" example:"VIP月卡"`
+	// WalletID optionally pins this order to one wallet row managed by the
+	// admin console. The service still requires the row to be enabled, on the
+	// requested network, and permitted by payment_wallet_allowlist.
+	WalletID uint64 `json:"wallet_id" form:"wallet_id" example:"1"`
 	// PaymentType is a compatibility flag, not a gateway selector. Only
 	// "Epay" (case-insensitive) switches callback format to legacy EPay;
 	// empty or any other value is stored as "Gmpay" and uses GMPay JSON.
@@ -30,6 +34,7 @@ func (r CreateTransactionRequest) Translates() map[string]string {
 		"Amount":    "支付金额",
 		"NotifyUrl": "异步回调网址",
 		"Signature": "签名",
+		"WalletID":  "收款地址ID",
 	}
 }
 
@@ -57,15 +62,17 @@ func (r ManualPaymentRequest) Translates() map[string]string {
 
 // SwitchNetworkRequest 切换支付网络
 type SwitchNetworkRequest struct {
-	TradeId string `json:"trade_id" validate:"required" example:"3nQ9pL2xV7sK1mR8cT4yB_aZ"`
-	Token   string `json:"token" validate:"required" example:"USDT"`
-	Network string `json:"network" validate:"required" example:"okpay,tron,solana,ethereum,aptos"`
+	TradeId  string `json:"trade_id" validate:"required" example:"3nQ9pL2xV7sK1mR8cT4yB_aZ"`
+	Token    string `json:"token" validate:"required" example:"USDT"`
+	Network  string `json:"network" validate:"required" example:"okpay,tron,solana,ethereum,aptos"`
+	WalletID uint64 `json:"wallet_id" example:"1"`
 }
 
 func (r SwitchNetworkRequest) Translates() map[string]string {
 	return validate.MS{
-		"TradeId": "订单号",
-		"Token":   "币种",
-		"Network": "网络",
+		"TradeId":  "订单号",
+		"Token":    "币种",
+		"Network":  "网络",
+		"WalletID": "收款地址ID",
 	}
 }

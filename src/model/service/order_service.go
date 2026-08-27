@@ -150,6 +150,12 @@ func CreateTransaction(req *request.CreateTransactionRequest, apiKey *mdb.ApiKey
 	}
 
 	if token == "" && network == "" {
+		if req.WalletID != 0 {
+			// A wallet row is network-specific. Placeholder orders do not have a
+			// network yet, so the selector must be supplied later to
+			// /pay/switch-network instead of being silently ignored.
+			return nil, constant.ParamsMarshalErr
+		}
 		tradeID := GenerateCode()
 		order := &mdb.Orders{
 			TradeId:     tradeID,
@@ -188,7 +194,7 @@ func CreateTransaction(req *request.CreateTransactionRequest, apiKey *mdb.ApiKey
 		return nil, constant.PayAmountErr
 	}
 
-	walletAddress, err := data.GetAvailableWalletAddressByNetwork(network)
+	walletAddress, err := data.GetSelectableWalletAddresses(network, req.WalletID)
 	if err != nil {
 		return nil, err
 	}
@@ -588,18 +594,24 @@ func SwitchNetwork(req *request.SwitchNetworkRequest) (*response.CheckoutCounter
 	}
 
 	if network == mdb.PaymentProviderOkPay {
+		if req.WalletID != 0 {
+			return nil, constant.ParamsMarshalErr
+		}
 		return switchToOkPay(parent, token)
 	}
 
 	if parent.Status == mdb.StatusWaitSelect {
-		return completeWaitSelectOrder(parent, token, network)
+		return completeWaitSelectOrder(parent, token, network, req.WalletID)
 	}
 
 	// 2. Same token+network as parent → mark selected and return
 	if strings.EqualFold(parent.Token, token) && strings.EqualFold(parent.Network, network) {
+		if err = ensureOrderMatchesRequestedWallet(parent, req.WalletID); err != nil {
+			return nil, err
+		}
 		_ = data.MarkOrderSelected(parent.TradeId)
 		parent.IsSelected = true
-		return buildCheckoutResponse(parent), nil
+		return buildCheckoutResponse(parent)
 	}
 
 	// 3. Existing active sub-order for this token+network → return it
@@ -608,11 +620,14 @@ func SwitchNetwork(req *request.SwitchNetworkRequest) (*response.CheckoutCounter
 		return nil, err
 	}
 	if existing.ID > 0 {
+		if err = ensureOrderMatchesRequestedWallet(existing, req.WalletID); err != nil {
+			return nil, err
+		}
 		_ = data.MarkOrderSelected(parent.TradeId)
 		_ = data.MarkOrderSelected(existing.TradeId)
 		_ = data.RefreshOrderExpiration(parent.TradeId)
 		existing.IsSelected = true
-		return buildCheckoutResponse(existing), nil
+		return buildCheckoutResponse(existing)
 	}
 
 	// 4. Only one sub-order may ever be created under a parent. Existing
@@ -646,7 +661,7 @@ func SwitchNetwork(req *request.SwitchNetworkRequest) (*response.CheckoutCounter
 	}
 
 	// 7. Find and lock wallet
-	walletAddress, err := data.GetAvailableWalletAddressByNetwork(network)
+	walletAddress, err := data.GetSelectableWalletAddresses(network, req.WalletID)
 	if err != nil {
 		return nil, err
 	}
@@ -702,10 +717,10 @@ func SwitchNetwork(req *request.SwitchNetworkRequest) (*response.CheckoutCounter
 	_ = data.MarkOrderSelected(parent.TradeId)
 	_ = data.RefreshOrderExpiration(parent.TradeId)
 
-	return buildCheckoutResponse(subOrder), nil
+	return buildCheckoutResponse(subOrder)
 }
 
-func completeWaitSelectOrder(parent *mdb.Orders, token string, network string) (*response.CheckoutCounterResponse, error) {
+func completeWaitSelectOrder(parent *mdb.Orders, token string, network string, walletID uint64) (*response.CheckoutCounterResponse, error) {
 	if !data.IsChainEnabled(network) {
 		return nil, constant.ChainNotEnabled
 	}
@@ -723,7 +738,7 @@ func completeWaitSelectOrder(parent *mdb.Orders, token string, network string) (
 		return nil, constant.PayAmountErr
 	}
 
-	walletAddress, err := data.GetAvailableWalletAddressByNetwork(network)
+	walletAddress, err := data.GetSelectableWalletAddresses(network, walletID)
 	if err != nil {
 		return nil, err
 	}
@@ -754,10 +769,27 @@ func completeWaitSelectOrder(parent *mdb.Orders, token string, network string) (
 	if err != nil {
 		return nil, err
 	}
-	return buildCheckoutResponse(order), nil
+	return buildCheckoutResponse(order)
 }
 
-func buildCheckoutResponse(order *mdb.Orders) *response.CheckoutCounterResponse {
+func ensureOrderMatchesRequestedWallet(order *mdb.Orders, walletID uint64) error {
+	if walletID == 0 {
+		return nil
+	}
+	rows, err := data.GetSelectableWalletAddresses(order.Network, walletID)
+	if err != nil {
+		return err
+	}
+	if len(rows) != 1 || normalizeOrderAddressByNetwork(order.Network, rows[0].Address) != normalizeOrderAddressByNetwork(order.Network, order.ReceiveAddress) {
+		return constant.WalletSelectionUnavailableErr
+	}
+	return nil
+}
+
+func buildCheckoutResponse(order *mdb.Orders) (*response.CheckoutCounterResponse, error) {
+	if err := data.ValidateOrderWalletAllowlist(order); err != nil {
+		return nil, err
+	}
 	paymentType := mdb.PaymentTypeGmpay
 	if isEPayOrder(order) {
 		paymentType = mdb.PaymentTypeEpay
@@ -776,7 +808,7 @@ func buildCheckoutResponse(order *mdb.Orders) *response.CheckoutCounterResponse 
 		RedirectUrl:    buildPublicRedirectURL(order),
 		CreatedAt:      order.CreatedAt.TimestampMilli(),
 		IsSelected:     order.IsSelected,
-	}
+	}, nil
 }
 
 func completeWaitSelectOkPayOrder(parent *mdb.Orders, token string) (*response.CheckoutCounterResponse, error) {
@@ -852,7 +884,10 @@ func completeWaitSelectOkPayOrder(parent *mdb.Orders, token string) (*response.C
 	if err != nil {
 		return nil, err
 	}
-	resp := buildCheckoutResponse(order)
+	resp, err := buildCheckoutResponse(order)
+	if err != nil {
+		return nil, err
+	}
 	resp.PaymentUrl = okpayOrder.PayURL
 	return resp, nil
 }
@@ -886,7 +921,10 @@ func switchToOkPay(parent *mdb.Orders, token string) (*response.CheckoutCounterR
 		if err != nil {
 			return nil, err
 		}
-		resp := buildCheckoutResponse(order)
+		resp, err := buildCheckoutResponse(order)
+		if err != nil {
+			return nil, err
+		}
 		resp.PaymentUrl = providerRow.PayURL
 		return resp, nil
 	}
@@ -912,7 +950,10 @@ func switchToOkPay(parent *mdb.Orders, token string) (*response.CheckoutCounterR
 		}
 		_ = data.MarkOrderSelected(existing.TradeId)
 		existing.IsSelected = true
-		resp := buildCheckoutResponse(existing)
+		resp, err := buildCheckoutResponse(existing)
+		if err != nil {
+			return nil, err
+		}
 		resp.PaymentUrl = providerRow.PayURL
 		return resp, nil
 	}
@@ -1023,7 +1064,10 @@ func switchToOkPay(parent *mdb.Orders, token string) (*response.CheckoutCounterR
 		return nil, err
 	}
 
-	resp := buildCheckoutResponse(subOrder)
+	resp, err := buildCheckoutResponse(subOrder)
+	if err != nil {
+		return nil, err
+	}
 	resp.PaymentUrl = okpayOrder.PayURL
 	return resp, nil
 }

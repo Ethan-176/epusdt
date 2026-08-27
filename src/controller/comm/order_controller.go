@@ -45,6 +45,7 @@ func apiKeyFromContext(ctx echo.Context) *mdb.ApiKey {
 // @Param        redirect_url formData string false "Redirect URL"
 // @Param        name formData string false "Order name"
 // @Param        payment_type formData string false "Optional GMPay compatibility flag; include in signature when sent"
+// @Param        wallet_id formData integer false "Optional enabled admin wallet ID; include in signature when sent"
 // @Success      200 {object} response.ApiResponse{data=response.CreateTransactionResponse}
 // @Failure      400 {object} response.ApiResponse "Stable errno in status_code: 10009 invalid params, 10041 invalid notify_url, 10004 invalid amount, 10014 chain disabled, 10016 unsupported asset, 10003 no wallet, 10005 no amount channel"
 // @Router       /payments/gmpay/v1/order/create-transaction [post]
@@ -118,6 +119,7 @@ func (c *BaseCommController) SwitchNetwork(ctx echo.Context) (err error) {
 // @Param        return_url query string false "Redirect URL after payment (GET query)"
 // @Param        name query string false "Order name (GET query)"
 // @Param        type query string false "Either alipay or a supported token.network selector such as usdt.tron (GET query)"
+// @Param        wallet_id query integer false "Optional enabled admin wallet ID; included in the EPay signature"
 // @Param        sign query string false "MD5 signature (GET query)"
 // @Param        sign_type query string false "Signature type (MD5, GET query)"
 // @Param        pid formData integer true "API key PID"
@@ -127,6 +129,7 @@ func (c *BaseCommController) SwitchNetwork(ctx echo.Context) (err error) {
 // @Param        return_url formData string false "Redirect URL after payment"
 // @Param        name formData string false "Order name"
 // @Param        type formData string false "Either alipay or a supported token.network selector such as usdt.tron"
+// @Param        wallet_id formData integer false "Optional enabled admin wallet ID; included in the EPay signature"
 // @Param        sign formData string true "MD5 signature"
 // @Param        sign_type formData string false "Signature type (MD5)"
 // @Success      302 "Redirect to checkout counter"
